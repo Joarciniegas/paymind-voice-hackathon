@@ -1,0 +1,16 @@
+// Worker «paymind-voice» (3 oct 2026): el cerebro de las llamadas de cobranza
+// con IA. Twilio ConversationRelay abre un WebSocket aquí (wss://…/ws), nos
+// manda lo que dice el comprador ya transcrito y nosotros respondemos texto
+// que Twilio convierte en voz. La conversación la lleva Workers AI.
+// Despliegue: npx wrangler deploy (desde voice/).
+// Secretos (wrangler secret put): VOICE_KEY (= VOICE_KEY en Coolify) y
+// PAYMIND_URL (p. ej. https://bizmind.us/paymind).
+{
+  "name": "paymind-voice",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  // remote: en «wrangler dev» la IA corre en Cloudflare (no hay modelo local).
+  "ai": { "binding": "AI", "remote": true },
+  "observability": { "enabled": true }
+}
