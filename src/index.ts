@@ -76,18 +76,20 @@ async function resumir(env: Env, c: Contexto, transcript: Turno[], resultado: Re
       headers: { authorization: `Bearer ${env.MODEL_API_KEY}`, 'content-type': 'application/json' },
       body: JSON.stringify({
         model: MODELO,
-        reasoning: { effort: 'low' },
-        max_output_tokens: 600,
+        reasoning: { effort: 'minimal' },
+        max_output_tokens: 1200,
         instructions:
           'Resume esta llamada de cobranza en máximo 2 frases, en español, para que el agente la recuerde en la próxima llamada: ' +
           'qué dijo el cliente (motivo del atraso, situación, compromisos, tono) y cómo terminó. Sin saludos ni datos inventados.',
         input: `Resultado: ${resultado}\n\n${texto}`,
       }),
     });
-    const j = (await r.json()) as { output?: { type: string; content?: { text?: string }[] }[] };
-    const msg = j.output?.find((o) => o.type === 'message');
-    return msg?.content?.map((x) => x.text ?? '').join('').trim() || `Llamada terminada: ${resultado}.`;
-  } catch {
+    const j = (await r.json()) as { status?: string; error?: unknown; output?: { type: string; content?: { text?: string }[] }[] };
+    const resumen = j.output?.filter((o) => o.type === 'message').flatMap((o) => o.content ?? []).map((x) => x.text ?? '').join(' ').trim();
+    if (!resumen) console.log('[demo] resumen vacío', r.status, j.status, JSON.stringify(j.error ?? '').slice(0, 300));
+    return resumen || `Llamada terminada: ${resultado}.`;
+  } catch (e) {
+    console.log('[demo] resumen falló', String(e));
     return `Llamada terminada: ${resultado}.`;
   }
 }
@@ -289,13 +291,59 @@ class Sesion {
     this.mensajes.push({ role: 'assistant', content: completo || dicho });
     this.anotar({ role: 'assistant', content: dicho.trim(), ts: new Date().toISOString() });
 
-    const fin = leerFunciones(llamadas, c) ?? leerEtiquetas(completo, c);
+    let fin = leerFunciones(llamadas, c) ?? leerEtiquetas(completo, c);
+    // Sonó a cierre pero no llamó a ninguna función: Muse decide aparte si la llamada terminó.
+    if (!fin && PARECE_CIERRE.test(dicho)) {
+      fin = await this.verificarCierre(c);
+      if (miGeneracion !== this.generacion) fin = null; // el comprador siguió hablando: la llamada sigue
+    }
     if (fin) {
       this.resultado = fin.resultado;
       this.promesa = fin.promesa;
+      // Nunca se cuelga sin despedirse.
+      if (!SE_DESPIDIO.test(dicho)) {
+        const adios = despedida(fin.resultado, c.lang);
+        this.enviar({ type: 'text', token: adios, last: true });
+        dicho += ` ${adios}`;
+        this.anotar({ role: 'assistant', content: adios, ts: new Date().toISOString() });
+      }
       // Se deja terminar la última frase antes de colgar (~65 ms por carácter).
       await dormir(Math.min(15000, dicho.length * 65 + 900));
       this.colgar();
+    }
+  }
+
+  /** Segunda opinión de Muse con tool_choice «required»: ¿terminó la llamada y cómo? */
+  private async verificarCierre(c: Contexto): Promise<Fin | null> {
+    try {
+      const r = await fetch(MODEL_API, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${this.env.MODEL_API_KEY}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: MODELO,
+          reasoning: { effort: ESFUERZO },
+          max_output_tokens: 700,
+          tools: [...HERRAMIENTAS, CONTINUAR],
+          tool_choice: 'required',
+          instructions:
+            this.mensajes.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n') +
+            '\n\nREVISIÓN: el agente acaba de hablar. Si la llamada ya llegó a su fin según las reglas (p. ej. fecha y monto confirmados), llama a la función de ese desenlace con sus datos; si falta algo por acordar o preguntar, llama a continue_conversation.',
+          input: this.mensajes.filter((m) => m.role !== 'system').map((m) => ({ role: m.role, content: m.content })),
+        }),
+      });
+      const j = (await r.json()) as { output?: { type: string; name?: string; arguments?: string }[] };
+      const llamadas: Funcion[] = (j.output ?? [])
+        .filter((o) => o.type === 'function_call' && o.name && o.name !== 'continue_conversation')
+        .map((o) => {
+          try {
+            return { name: o.name!, args: JSON.parse(o.arguments || '{}') };
+          } catch {
+            return { name: o.name!, args: {} };
+          }
+        });
+      return leerFunciones(llamadas, c);
+    } catch {
+      return null;
     }
   }
 
@@ -398,6 +446,28 @@ const HERRAMIENTAS = [
   { type: 'function', name: 'wrong_person', description: 'The person did not clearly confirm being the buyer. Say the exact wrong-person sentence from the instructions, then call this.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
   { type: 'function', name: 'end_call', description: 'Already paid, or everything is clear with no agreement needed. Thank them, say goodbye, then call this.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
 ];
+
+const CONTINUAR = {
+  type: 'function',
+  name: 'continue_conversation',
+  description: 'The call is not over yet: something still needs to be agreed or asked.',
+  parameters: { type: 'object', properties: {}, additionalProperties: false },
+};
+
+// Frases que suelen cerrar una llamada (disparan la revisión) y despedidas (para no colgar sin una).
+const PARECE_CIERRE = /confirm|registr|agend|queda|le (mando|env[ií]o|enviar[ée])|enlace|alguien del equipo|no (lo|la) volver|scheduled|recorded|send you|link|someone from|won't call/i;
+const SE_DESPIDIO = /buen d[ií]a|buena tarde|buenas noches|adi[oó]s|hasta luego|cu[ií]dese|have a (great|good|nice)|goodbye|bye|take care/i;
+
+function despedida(r: Resultado, lang: 'es' | 'en'): string {
+  if (lang === 'es') {
+    if (r === 'promise' || r === 'pay_link') return 'Le mando el enlace de pago por mensaje. ¡Gracias, que tenga buen día!';
+    if (r === 'human') return 'Alguien del equipo le llamará hoy. Gracias, que tenga buen día.';
+    return 'Gracias, que tenga buen día.';
+  }
+  if (r === 'promise' || r === 'pay_link') return "I'll text you the payment link. Thank you, have a great day!";
+  if (r === 'human') return 'Someone from our team will call you today. Thank you, have a great day.';
+  return 'Thank you, have a great day.';
+}
 
 /** Promesa dentro de las reglas del dealer; si no, pasa a un humano. */
 function validarPromesa(fecha: string, monto: number, c: Contexto): Fin {
