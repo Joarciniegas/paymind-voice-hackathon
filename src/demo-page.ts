@@ -151,7 +151,12 @@ export const PAGINA = /* html */ `<!doctype html>
   .try { padding: 16px 18px; border-radius: 16px; border: 1px dashed var(--line-2); font-size: 14px; color: var(--muted); }
   .try b { color: var(--text); }
   footer { margin-top: 56px; padding-top: 22px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; font: 400 12px/1.6 var(--mono); color: var(--dim); }
-  footer b { color: var(--muted); font-weight: 500; }
+  footer { align-items: center; }
+  .builtby { display: inline-flex; align-items: center; gap: 12px; padding: 8px 16px 8px 8px; border: 1px solid var(--line-2); border-radius: 14px; background: var(--panel); color: var(--text); text-decoration: none; transition: border-color .2s, transform .2s; }
+  .builtby:hover { text-decoration: none; border-color: #ff5a1f; transform: translateY(-1px); }
+  .builtby img { width: 34px; height: 34px; border-radius: 9px; display: block; }
+  .builtby small { display: block; font: 500 10px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+  .builtby b { display: block; font: 700 16px/1 var(--display); letter-spacing: -.01em; color: var(--text); }
 
   /* sello «Powered by Muse Spark · Meta» */
   .powered { display: inline-flex; align-items: center; gap: 10px; padding: 8px 14px 8px 10px; border-radius: 999px; border: 1px solid rgba(0,129,251,.35); background: linear-gradient(100deg, rgba(0,129,251,.14), rgba(122,184,255,.05)); box-shadow: 0 0 0 1px rgba(255,255,255,.03) inset, 0 10px 30px -14px rgba(0,129,251,.7); font: 500 12px/1 var(--mono); color: var(--muted); letter-spacing: .04em; text-decoration: none; position: relative; overflow: hidden; }
@@ -243,8 +248,8 @@ export const PAGINA = /* html */ `<!doctype html>
   </section>
 
   <footer>
-    <span>Fictitious dealer (Lone Star Motors) and buyers · Built by <a href="https://bizmind.us">BizMind AI Agency</a>, Houston TX</span>
-    <span><b>Muse Spark</b> · Developed with <b>Claude Code</b> · <a href="https://github.com/Joarciniegas/paymind-voice-hackathon">Source</a></span>
+    <a class="builtby" href="https://bizmind.us" target="_blank" rel="noopener"><img src="https://bizmind.us/brand/mark.svg" alt="" width="34" height="34"><span><small>Built by</small><b>BizMind AI Agency</b></span></a>
+    <span>Fictitious dealer (Lone Star Motors) and buyers · Houston, TX · <a href="https://github.com/Joarciniegas/paymind-voice-hackathon">Source code</a></span>
   </footer>
 </main>
 <script>
