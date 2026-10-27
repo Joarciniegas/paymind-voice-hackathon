@@ -127,6 +127,11 @@ export const PAGINA = /* html */ `<!doctype html>
   .outcome b { display: block; font-weight: 700; }
   .outcome small { font: 400 12px/1.4 var(--mono); color: var(--muted); }
   .outcome .tick { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--teal); color: var(--ink); font-weight: 800; flex: none; }
+  .paylink { margin-top: 10px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 16px; border-radius: 14px; background: linear-gradient(100deg, rgba(255,173,66,.16), rgba(255,122,47,.08)); border: 1px solid rgba(255,173,66,.45); color: var(--text); text-decoration: none; animation: rise .4s ease-out both; }
+  .paylink:hover { text-decoration: none; border-color: var(--amber); }
+  .paylink span { font: 500 13px/1.4 var(--mono); color: var(--muted); }
+  .paylink b { color: var(--amber); }
+  .hint { margin: 8px 2px 0; font: 400 12px/1.4 var(--mono); color: var(--dim); }
   .mem { display: grid; gap: 10px; }
   .memo { position: relative; padding: 14px 14px 14px 16px; border-radius: 14px; background: var(--panel-2); border: 1px solid var(--line); animation: rise .35s ease-out both; }
   .memo::before { content: ""; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px; border-radius: 3px; background: var(--amber); }
@@ -316,7 +321,7 @@ $('go').addEventListener('click', async () => {
   }
 });
 
-let shown = 0;
+let shown = 0, endedAt = 0, smsShown = false;
 async function follow(callId) {
   const r = await fetch('/api/transcript?c=' + callId).then((x) => x.json()).catch(() => null);
   if (!r) return;
@@ -327,16 +332,30 @@ async function follow(callId) {
     $('chat').scrollTop = $('chat').scrollHeight;
     shown = turns.length;
   }
-  if (turns.length) setState('live', 'On the call');
   const end = r.events.find((e) => e.kind === 'end');
-  if (end) {
-    clearInterval(poll);
-    shown = 0;
+  const sms = r.events.find((e) => e.kind === 'sms');
+  if (turns.length && !end) setState('live', 'On the call');
+  if (end && !endedAt) {
+    endedAt = Date.now();
     setState('ended', 'Call ended');
-    $('outcome').innerHTML = '<div class="outcome"><span class="tick">✓</span><div><b>' + esc(OUTCOMES[end.outcome] || end.outcome) + '</b><small>' + (end.promisedDate ? money(end.promisedAmount) + ' on ' + esc(end.promisedDate) + ' · pay link sent by text' : 'Saved to ' + esc(buyer.firstName) + '\\'s memory') + '</small></div></div>';
+    $('outcome').innerHTML = '<div class="outcome"><span class="tick">✓</span><div><b>' + esc(OUTCOMES[end.outcome] || end.outcome) + '</b><small>' + (end.promisedDate ? money(end.promisedAmount) + ' on ' + esc(end.promisedDate) : 'Saved to ' + esc(buyer.firstName) + '\\'s memory') + '</small></div></div>';
     $('go').disabled = false;
     setTimeout(loadMemory, 6000); // el resumen de Muse tarda unos segundos
   }
+  if (sms && !smsShown) {
+    smsShown = true;
+    $('outcome').insertAdjacentHTML('beforeend', '<a class="paylink" href="' + esc(sms.url) + '" target="_blank" rel="noopener"><span>💬 Pay link texted to your phone · ' + money(sms.amount) + '</span><b>Open the test pay link →</b></a><p class="hint">Stripe test mode: card 4242 4242 4242 4242, any future date, any CVC.</p>');
+  }
+  // Tras colgar se sigue mirando ~25 s por si llega el SMS con el enlace.
+  if (endedAt && (sms || Date.now() - endedAt > 25000)) {
+    clearInterval(poll);
+    shown = 0; endedAt = 0; smsShown = false;
+  }
+}
+
+if (new URLSearchParams(location.search).get('paid') === '1') {
+  $('msg').style.color = 'var(--teal)';
+  $('msg').textContent = '✓ Test payment completed in Stripe. No real money moved.';
 }
 
 init();

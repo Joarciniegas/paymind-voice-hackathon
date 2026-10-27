@@ -15,13 +15,15 @@ export interface DemoEnv {
   TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
   TWILIO_FROM: string;
+  STRIPE_TEST_KEY: string; // sandbox: los enlaces de la demo nunca cobran dinero real
   DEMO_DAILY_CAP?: string;
 }
 
 export type Evento =
   | { kind: 'turn'; role: 'user' | 'assistant'; content: string; ts: string }
   | { kind: 'status'; status: string; ts: string }
-  | { kind: 'end'; outcome: string; promisedDate?: string; promisedAmount?: number; ts: string };
+  | { kind: 'end'; outcome: string; promisedDate?: string; promisedAmount?: number; ts: string }
+  | { kind: 'sms'; url: string; amount: number; ts: string };
 
 const POR_TELEFONO = 3;
 const json = (d: unknown, status = 200) => new Response(JSON.stringify(d), { status, headers: { 'content-type': 'application/json' } });
@@ -109,8 +111,55 @@ async function llamar(req: Request, env: DemoEnv, url: URL): Promise<Response> {
     console.log('[demo] twilio error', r.status, (await r.text()).slice(0, 300));
     return json({ error: 'We could not place the call right now. Please try again in a minute.' }, 502);
   }
+  // El teléfono solo se guarda 2 h: para mandar el enlace de pago al terminar la llamada.
+  await env.MEMORY.put(`call:${callId}`, JSON.stringify({ to, host: url.host }), { expirationTtl: 7200 });
   await registrar(env.CALLS, callId, { kind: 'status', status: 'ringing', ts: new Date().toISOString() });
   return json({ callId });
+}
+
+/**
+ * Crea un Stripe Checkout en modo TEST por el monto acordado y lo manda por SMS al
+ * teléfono que contestó. Devuelve la URL (la página la muestra) o null si falló.
+ */
+export async function enviarEnlacePago(
+  env: DemoEnv,
+  callId: string,
+  c: { firstName: string; vehicle: string | null; dealerName: string; lang: 'es' | 'en' },
+  monto: number,
+): Promise<string | null> {
+  const llamada = (await env.MEMORY.get<{ to: string; host: string }>(`call:${callId}`, 'json').catch(() => null)) ?? null;
+  if (!llamada || !env.STRIPE_TEST_KEY?.startsWith('sk_test_')) return null; // nunca con una clave live
+  const es = c.lang === 'es';
+  const r = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${env.STRIPE_TEST_KEY}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      mode: 'payment',
+      'line_items[0][quantity]': '1',
+      'line_items[0][price_data][currency]': 'usd',
+      'line_items[0][price_data][unit_amount]': String(Math.round(monto * 100)),
+      'line_items[0][price_data][product_data][name]': `${c.dealerName} · ${c.vehicle ?? 'vehicle'} payment (DEMO)`,
+      'line_items[0][price_data][product_data][description]': 'PayMind Voice hackathon demo. Test mode: use card 4242 4242 4242 4242.',
+      success_url: `https://${llamada.host}/?paid=1`,
+      cancel_url: `https://${llamada.host}/`,
+      'metadata[call_id]': callId,
+    }),
+  });
+  const sesion = (await r.json().catch(() => ({}))) as { url?: string; error?: { message?: string } };
+  if (!r.ok || !sesion.url) {
+    console.log('[demo] stripe error', r.status, sesion.error?.message);
+    return null;
+  }
+  const texto = es
+    ? `${c.dealerName} (DEMO PayMind Voice): ${c.firstName}, aquí está su enlace seguro para pagar $${monto.toFixed(2)}: ${sesion.url} — Demo de prueba, no hay deuda real.`
+    : `${c.dealerName} (DEMO PayMind Voice): ${c.firstName}, here is your secure link to pay $${monto.toFixed(2)}: ${sesion.url} — Test demo, no real debt.`;
+  const sms = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`, {
+    method: 'POST',
+    headers: { authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ To: llamada.to, From: env.TWILIO_FROM, Body: texto }),
+  });
+  if (!sms.ok) console.log('[demo] sms error', sms.status, (await sms.text()).slice(0, 300));
+  return sesion.url;
 }
 
 /** Añade un evento al log de la llamada (lo lee la página cada segundo). */

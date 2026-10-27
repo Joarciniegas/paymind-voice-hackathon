@@ -14,7 +14,7 @@
 
 import { LOGO_BMP_B64 } from './logo';
 import { DEALER_DEMO, DEUDORES_DEMO } from './demo-data';
-import { CallLog, registrar, rutaDemo, type DemoEnv, type Evento } from './demo';
+import { CallLog, enviarEnlacePago, registrar, rutaDemo, type DemoEnv, type Evento } from './demo';
 
 export { CallLog };
 
@@ -388,6 +388,12 @@ class Sesion {
         const c = await this.ctxDatos;
         const d = deudorDemo(this.callId);
         if (!c || !d || this.turnos === 0) return; // sin conversación no hay nada que recordar
+        // Promesa o «pagar hoy»: enlace de Stripe (modo TEST) por SMS al teléfono que contestó.
+        if (resultado === 'promise' || resultado === 'pay_link') {
+          const monto = this.promesa?.amount ?? (c.pastDue > 0 ? c.pastDue : c.paymentAmount);
+          const url = await enviarEnlacePago(this.env, this.callId, { firstName: c.firstName, vehicle: c.vehicle, dealerName: c.dealerName, lang: c.lang }, monto);
+          if (url) this.evento({ kind: 'sms', url, amount: monto, ts: new Date().toISOString() });
+        }
         const recuerdo: Recuerdo = {
           date: c.today,
           outcome: resultado,
