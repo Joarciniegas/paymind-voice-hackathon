@@ -9,8 +9,8 @@
 //     habla de deuda, montos ni vehículo (lo exige la ley de cobranza).
 //   - Nada de amenazas, embargo, reportes de crédito ni descuentos inventados.
 //   - Frases cortas: es una llamada, no un chat.
-// El modelo marca el resultado con etiquetas [[…]] al final de su respuesta;
-// el código las quita antes de hablar y las convierte en el resultado.
+// El resultado lo marca el modelo llamando a una función (tool calling de Muse Spark);
+// las etiquetas [[…]] de la versión anterior quedan como respaldo.
 
 import { LOGO_BMP_B64 } from './logo';
 import { DEALER_DEMO, DEUDORES_DEMO } from './demo-data';
@@ -167,12 +167,14 @@ class Sesion {
     this.transcript.push({ role: 'user', content: texto, ts: new Date().toISOString() });
     this.mensajes.push({ role: 'user', content: texto });
     if (this.turnos >= MAX_TURNOS) {
-      this.mensajes.push({ role: 'system', content: 'La llamada ya es muy larga: despídete amablemente, di que alguien del equipo le llamará, y termina con [[HUMANO]].' });
+      this.mensajes.push({ role: 'system', content: 'La llamada ya es muy larga: despídete amablemente, di que alguien del equipo le llamará, y llama a transfer_to_human.' });
     }
 
     let completo = '';
     let pendiente = '';
     let dicho = '';
+    let mensajeHablado: number | null = null; // output_index del mensaje que se dice (a veces Muse manda dos)
+    const llamadas: Funcion[] = [];
     const decir = (frase: string, last: boolean) => {
       const limpia = frase.replace(/\[\[[^\]]*\]\]/g, '').replace(/\s+/g, ' ');
       if (miGeneracion !== this.generacion) return; // el comprador ya habló encima
@@ -190,6 +192,7 @@ class Sesion {
           stream: true,
           reasoning: { effort: ESFUERZO },
           max_output_tokens: 700, // incluye los tokens de razonamiento (~100 con «minimal»)
+          tools: HERRAMIENTAS,
           instructions: this.mensajes.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n'),
           input: this.mensajes.filter((m) => m.role !== 'system').map((m) => ({ role: m.role, content: m.content })),
         }),
@@ -209,8 +212,18 @@ class Sesion {
           if (dato === '[DONE]') continue;
           let token = '';
           try {
-            const j = JSON.parse(dato) as { type?: string; delta?: string };
+            const j = JSON.parse(dato) as { type?: string; delta?: string; output_index?: number; item?: { type?: string; name?: string; arguments?: string } };
+            if (j.type === 'response.output_item.done' && j.item?.type === 'function_call' && j.item.name) {
+              let args: Record<string, unknown> = {};
+              try {
+                args = JSON.parse(j.item.arguments || '{}');
+              } catch {}
+              llamadas.push({ name: j.item.name, args });
+              continue;
+            }
             if (j.type !== 'response.output_text.delta') continue; // razonamiento y eventos de control no se dicen
+            mensajeHablado ??= j.output_index ?? 0;
+            if ((j.output_index ?? 0) !== mensajeHablado) continue; // segundo mensaje = repetición
             token = j.delta ?? '';
           } catch {
             continue;
@@ -230,12 +243,14 @@ class Sesion {
       completo ||= c.lang === 'es' ? 'Perdón, ¿me lo puede repetir?' : 'Sorry, could you repeat that?';
       pendiente ||= completo;
     }
+    // Llamó a una función sin decir nada: una despedida corta para no colgar en silencio.
+    if (!completo.trim() && llamadas.length) pendiente = c.lang === 'es' ? 'Muchas gracias, que tenga buen día.' : 'Thank you, have a great day.';
     decir(pendiente, true);
 
-    this.mensajes.push({ role: 'assistant', content: completo });
+    this.mensajes.push({ role: 'assistant', content: completo || dicho });
     this.transcript.push({ role: 'assistant', content: dicho.trim(), ts: new Date().toISOString() });
 
-    const fin = leerEtiquetas(completo, c);
+    const fin = leerFunciones(llamadas, c) ?? leerEtiquetas(completo, c);
     if (fin) {
       this.resultado = fin.resultado;
       this.promesa = fin.promesa;
@@ -293,22 +308,82 @@ class Sesion {
   }
 }
 
-/** Convierte las etiquetas finales del modelo en el resultado de la llamada. */
-function leerEtiquetas(texto: string, c: Contexto): { resultado: Resultado; promesa: { date: string; amount: number } | null } | null {
-  const p = texto.match(/\[\[PROMESA:(\d{4}-\d{2}-\d{2}):([\d.]+)\]\]/);
-  if (p) {
-    const dias = (Date.parse(`${p[1]}T12:00:00Z`) - Date.parse(`${c.today}T12:00:00Z`)) / 86_400_000;
-    const monto = Number(p[2]);
-    // Fuera de las reglas del dealer: no se acepta como promesa, pasa a un humano.
-    if (dias >= 0 && dias <= c.rules.maxExtensionDays && monto > 0) return { resultado: 'promise', promesa: { date: p[1], amount: monto } };
-    return { resultado: 'human', promesa: null };
+type Funcion = { name: string; args: Record<string, unknown> };
+type Fin = { resultado: Resultado; promesa: { date: string; amount: number } | null };
+
+// Hackathon: el resultado de la llamada sale de tool calling de Muse Spark (más fiable que
+// las etiquetas [[…]], que quedan solo de respaldo). Todas cierran la llamada.
+const HERRAMIENTAS = [
+  {
+    type: 'function',
+    name: 'record_promise',
+    description: 'The buyer stated BOTH a payment date and an amount. Say the confirmation out loud first, then call this.',
+    parameters: {
+      type: 'object',
+      properties: { date: { type: 'string', description: 'YYYY-MM-DD, from the calendar in the instructions' }, amount: { type: 'number', description: 'US dollars' } },
+      required: ['date', 'amount'],
+      additionalProperties: false,
+    },
+  },
+  { type: 'function', name: 'send_pay_link', description: 'The buyer wants to pay today: tell them a secure card-payment link is on its way by text, then call this.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
+  {
+    type: 'function',
+    name: 'transfer_to_human',
+    description: 'Needs more time than allowed, cannot pay, disputes the debt, has a serious problem, asks for a person, or the call is too long. Tell them someone from the team will call today, then call this.',
+    parameters: { type: 'object', properties: { reason: { type: 'string' } }, required: ['reason'], additionalProperties: false },
+  },
+  { type: 'function', name: 'do_not_call', description: 'The person asked not to be called again. Apologize, confirm, then call this.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
+  { type: 'function', name: 'wrong_person', description: 'The person did not clearly confirm being the buyer. Say the exact wrong-person sentence from the instructions, then call this.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
+  { type: 'function', name: 'end_call', description: 'Already paid, or everything is clear with no agreement needed. Thank them, say goodbye, then call this.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
+];
+
+/** Promesa dentro de las reglas del dealer; si no, pasa a un humano. */
+function validarPromesa(fecha: string, monto: number, c: Contexto): Fin {
+  const dias = (Date.parse(`${fecha}T12:00:00Z`) - Date.parse(`${c.today}T12:00:00Z`)) / 86_400_000;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(fecha) && dias >= 0 && dias <= c.rules.maxExtensionDays && monto > 0) return { resultado: 'promise', promesa: { date: fecha, amount: monto } };
+  return { resultado: 'human', promesa: null };
+}
+
+/** Convierte las funciones que llamó el modelo en el resultado de la llamada. */
+function leerFunciones(llamadas: Funcion[], c: Contexto): Fin | null {
+  const f = llamadas[0];
+  if (!f) return null;
+  switch (f.name) {
+    case 'record_promise':
+      return validarPromesa(String(f.args.date ?? ''), Number(f.args.amount), c);
+    case 'send_pay_link':
+      return { resultado: 'pay_link', promesa: null };
+    case 'transfer_to_human':
+      return { resultado: 'human', promesa: null };
+    case 'do_not_call':
+      return { resultado: 'do_not_call', promesa: null };
+    case 'wrong_person':
+      return { resultado: 'wrong_person', promesa: null };
+    case 'end_call':
+      return { resultado: 'done', promesa: null };
   }
+  return null;
+}
+
+/** Respaldo: las etiquetas finales del modelo (formato previo al hackathon). */
+function leerEtiquetas(texto: string, c: Contexto): Fin | null {
+  const p = texto.match(/\[\[PROMESA:(\d{4}-\d{2}-\d{2}):([\d.]+)\]\]/);
+  if (p) return validarPromesa(p[1], Number(p[2]), c);
+  // Dijo la frase de «no es el comprador» pero no llamó a la función: se cierra igual.
+  if (texto.includes(fraseNoEsEl(c).split('?')[0])) return { resultado: 'wrong_person', promesa: null };
   if (/\[\[NO_LLAMAR\]\]/.test(texto)) return { resultado: 'do_not_call', promesa: null };
   if (/\[\[NO_ES_EL\]\]/.test(texto)) return { resultado: 'wrong_person', promesa: null };
   if (/\[\[HUMANO\]\]/.test(texto)) return { resultado: 'human', promesa: null };
   if (/\[\[PAGO_LINK\]\]/.test(texto)) return { resultado: 'pay_link', promesa: null };
   if (/\[\[FIN\]\]/.test(texto)) return { resultado: 'done', promesa: null };
   return null;
+}
+
+/** Frase fija para quien no es el comprador (no revela nada de la deuda). */
+function fraseNoEsEl(c: Contexto): string {
+  return c.lang === 'es'
+    ? `Gracias. ¿Le puede pedir a ${c.firstName} que nos llame a ${c.dealerName}${c.dealerPhone ? ` al ${c.dealerPhone}` : ''}? Que tenga buen día.`
+    : `Thank you. Could you ask ${c.firstName} to call ${c.dealerName}${c.dealerPhone ? ` at ${c.dealerPhone}` : ''}? Have a great day.`;
 }
 
 function instrucciones(c: Contexto): string {
@@ -318,6 +393,7 @@ function instrucciones(c: Contexto): string {
     c.pastDue > 0
       ? `Tiene un saldo vencido de ${dinero(c.pastDue)} (${c.daysPastDue} días de atraso). Su pago normal es de ${dinero(c.paymentAmount)}.`
       : `No tiene atraso; su próximo pago es de ${dinero(c.paymentAmount)}${c.nextPaymentDate ? ` el ${c.nextPaymentDate}` : ''}. La llamada es solo un recordatorio amable.`;
+  const noEsEl = fraseNoEsEl(c);
   const idioma = c.lang === 'es' ? 'Habla SIEMPRE en español neutro (de EE. UU.), de usted.' : 'Always speak English.';
   // Calendario de los próximos días: el modelo se equivoca al calcular «el viernes».
   const dias = c.lang === 'es' ? ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'] : ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -334,15 +410,15 @@ DATOS (solo para el cliente, nunca para terceros):
 - Teléfono del concesionario: ${c.dealerPhone || 'el de siempre'}
 
 REGLAS OBLIGATORIAS:
-1. Ya preguntaste "¿Hablo con ${c.firstName}?". Si la persona NO lo confirma claramente (dice que no, que no está, que es otra persona, o no sabe), NO digas por qué llamas: nada de pagos, montos, cuentas, deudas ni del vehículo, aunque te pregunte. Responde EXACTAMENTE: "Gracias. ¿Le puede pedir a ${c.firstName} que nos llame a ${c.dealerName}${c.dealerPhone ? ` al ${c.dealerPhone}` : ''}? Que tenga buen día." y termina con [[NO_ES_EL]].
+1. Ya preguntaste "¿Hablo con ${c.firstName}?". Si la persona NO lo confirma claramente (dice que no, que no está, que es otra persona, o no sabe), NO digas por qué llamas: nada de pagos, montos, cuentas, deudas ni del vehículo, aunque te pregunte. Responde EXACTAMENTE: "${noEsEl}" y llama a wrong_person.
 2. Si confirma que es ${c.firstName}: explica brevemente el motivo de la llamada con los DATOS y pregunta cuándo puede pagar.
 3. Opciones que puedes ofrecer:
-   - Pagar hoy: dile que le mandas ahora mismo por mensaje un enlace seguro para pagar con tarjeta. Termina con [[PAGO_LINK]].
-   - Prometer una fecha: solo entre hoy (${c.today}) y ${limite}, usando el calendario de arriba. Si el cliente no dijo cuánto pagará, PREGÚNTASELO (nunca lo supongas). Cuando ya tengas fecha y monto dichos por el cliente, repítelos en voz alta, dile que le mandas el enlace de pago y termina con [[PROMESA:AAAA-MM-DD:MONTO]] (ej. [[PROMESA:${c.today}:${c.paymentAmount.toFixed(2)}]]).
-   - Si pide más tiempo del permitido, no puede pagar, tiene una disputa, un problema serio, o quiere hablar con una persona: dile con empatía que alguien del equipo le llamará hoy. Termina con [[HUMANO]].
-   - Si pide que no lo vuelvan a llamar: discúlpate, confirma que no recibirá más llamadas automáticas y termina con [[NO_LLAMAR]].
-   - Si ya pagó o todo quedó claro sin acuerdo: agradece, despídete y termina con [[FIN]].
+   - Pagar hoy: dile que le mandas ahora mismo por mensaje un enlace seguro para pagar con tarjeta. Luego llama a send_pay_link.
+   - Prometer una fecha: solo entre hoy (${c.today}) y ${limite}, usando el calendario de arriba. Si el cliente no dijo cuánto pagará, PREGÚNTASELO (nunca lo supongas). Cuando ya tengas fecha y monto dichos por el cliente, repítelos en voz alta, dile que le mandas el enlace de pago y llama a record_promise con esa fecha (AAAA-MM-DD) y monto.
+   - Si pide más tiempo del permitido, no puede pagar, tiene una disputa, un problema serio, o quiere hablar con una persona: dile con empatía que alguien del equipo le llamará hoy. Luego llama a transfer_to_human.
+   - Si pide que no lo vuelvan a llamar: discúlpate, confirma que no recibirá más llamadas automáticas y llama a do_not_call.
+   - Si ya pagó o todo quedó claro sin acuerdo: agradece, despídete y llama a end_call.
 4. PROHIBIDO: amenazar, mencionar embargo, recuperación del auto, abogados, cortes o reportes de crédito; inventar descuentos, multas o acuerdos; pedir números de tarjeta o datos bancarios por teléfono; decir que eres una persona.
 5. Habla como en una llamada: frases cortas, máximo 2 oraciones por turno, cálido y respetuoso. Llama al cliente por su nombre (${c.firstName}); no uses "señor" ni "señora". Di los montos con naturalidad ("cuatrocientos cincuenta dólares"). Sin listas, sin emojis, sin markdown.
-6. Las etiquetas [[…]] van SOLO al final de tu último mensaje, nunca en medio, y solo una.`;
+6. Para terminar la llamada SIEMPRE dices tu frase y llamas a UNA sola función; nunca escribas los nombres de las funciones en voz alta.`;
 }
