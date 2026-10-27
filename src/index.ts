@@ -13,11 +13,13 @@
 // el código las quita antes de hablar y las convierte en el resultado.
 
 import { LOGO_BMP_B64 } from './logo';
+import { DEALER_DEMO, DEUDORES_DEMO } from './demo-data';
 
 interface Env {
-  AI: { run: (model: string, input: unknown) => Promise<unknown> };
+  MODEL_API_KEY: string; // Meta Model API (wrangler secret put MODEL_API_KEY)
   VOICE_KEY: string;
-  PAYMIND_URL: string;
+  PAYMIND_URL?: string; // sin él (o con DEMO=1) se usan los datos ficticios de demo-data.ts
+  DEMO?: string;
 }
 
 type Turno = { role: 'user' | 'assistant'; content: string; ts: string };
@@ -37,8 +39,22 @@ type Contexto = {
 };
 type Resultado = 'promise' | 'pay_link' | 'human' | 'do_not_call' | 'wrong_person' | 'done' | 'no_answer';
 
-const MODELO = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+// Hackathon: Muse Spark por la Meta Model API (Responses API, streaming).
+// Effort «minimal»: primer token en ~1 s, lo justo para una llamada.
+const MODEL_API = 'https://api.meta.ai/v1/responses';
+const MODELO = 'muse-spark-1.3';
+const ESFUERZO = 'minimal';
 const MAX_TURNOS = 14;
+
+const modoDemo = (env: Env) => env.DEMO === '1' || !env.PAYMIND_URL;
+
+/** Contexto de la llamada en modo demo: callId = «demo-<deudor>-<lo que sea>». */
+function contextoDemo(callId: string): Contexto | null {
+  const d = DEUDORES_DEMO.find((x) => callId.startsWith(`demo-${x.id}`));
+  if (!d) return null;
+  const today = new Date(Date.now() - 5 * 3_600_000).toISOString().slice(0, 10); // Houston (CDT/CST ≈ UTC-5)
+  return { ...d, ...DEALER_DEMO, today };
+}
 
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -91,7 +107,7 @@ class Sesion {
     private ctx: ExecutionContext,
   ) {
     // El contexto se pide en cuanto se abre el socket (no hay que esperar al setup).
-    this.ctxDatos = fetch(`${env.PAYMIND_URL}/api/collection/voice/context?c=${encodeURIComponent(callId)}`, {
+    this.ctxDatos = modoDemo(env) ? Promise.resolve(contextoDemo(callId)) : fetch(`${env.PAYMIND_URL}/api/collection/voice/context?c=${encodeURIComponent(callId)}`, {
       headers: { 'x-voice-key': env.VOICE_KEY },
     })
       .then((r) => (r.ok ? (r.json() as Promise<Contexto>) : null))
@@ -165,13 +181,21 @@ class Sesion {
     };
 
     try {
-      const flujo = (await this.env.AI.run(MODELO, {
-        messages: this.mensajes,
-        stream: true,
-        max_tokens: 260,
-        temperature: 0.4,
-      })) as ReadableStream<Uint8Array>;
-      const lector = flujo.pipeThrough(new TextDecoderStream()).getReader();
+      // Responses API: los mensaje(s) de sistema van en «instructions», el resto en «input».
+      const r = await fetch(MODEL_API, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${this.env.MODEL_API_KEY}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: MODELO,
+          stream: true,
+          reasoning: { effort: ESFUERZO },
+          max_output_tokens: 700, // incluye los tokens de razonamiento (~100 con «minimal»)
+          instructions: this.mensajes.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n'),
+          input: this.mensajes.filter((m) => m.role !== 'system').map((m) => ({ role: m.role, content: m.content })),
+        }),
+      });
+      if (!r.ok || !r.body) throw new Error(`model api ${r.status}`);
+      const lector = r.body.pipeThrough(new TextDecoderStream()).getReader();
       let resto = '';
       for (;;) {
         const { value, done } = await lector.read();
@@ -185,8 +209,9 @@ class Sesion {
           if (dato === '[DONE]') continue;
           let token = '';
           try {
-            const j = JSON.parse(dato) as { response?: string; choices?: { delta?: { content?: string } }[] };
-            token = j.response ?? j.choices?.[0]?.delta?.content ?? '';
+            const j = JSON.parse(dato) as { type?: string; delta?: string };
+            if (j.type !== 'response.output_text.delta') continue; // razonamiento y eventos de control no se dicen
+            token = j.delta ?? '';
           } catch {
             continue;
           }
@@ -245,6 +270,10 @@ class Sesion {
       transcript: this.transcript,
     });
     const mandar = async () => {
+      if (modoDemo(this.env)) {
+        console.log('[demo] resultado', cuerpo); // en demo no hay backend: queda en los logs del Worker
+        return;
+      }
       for (let i = 0; i < 3; i++) {
         try {
           const r = await fetch(`${this.env.PAYMIND_URL}/api/collection/voice/result`, {

@@ -1,5 +1,5 @@
 {
-  "name": "paymind-voice",
+  "name": "paymind-voice-hackathon",
   "private": true,
   "scripts": {
     "deploy": "wrangler deploy",
