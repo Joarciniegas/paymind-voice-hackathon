@@ -14,13 +14,15 @@
 
 import { LOGO_BMP_B64 } from './logo';
 import { DEALER_DEMO, DEUDORES_DEMO } from './demo-data';
+import { CallLog, registrar, rutaDemo, type DemoEnv, type Evento } from './demo';
 
-interface Env {
+export { CallLog };
+
+interface Env extends DemoEnv {
   MODEL_API_KEY: string; // Meta Model API (wrangler secret put MODEL_API_KEY)
   VOICE_KEY: string;
   PAYMIND_URL?: string; // sin él (o con DEMO=1) se usan los datos ficticios de demo-data.ts
   DEMO?: string;
-  MEMORY: KVNamespace; // memoria por deudor (hackathon)
 }
 
 type Turno = { role: 'user' | 'assistant'; content: string; ts: string };
@@ -94,6 +96,9 @@ export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === '/health') return new Response('ok');
+    // Hackathon: página pública de la demo y su API.
+    const demo = modoDemo(env) ? await rutaDemo(req, env, url) : null;
+    if (demo) return demo;
     // Logo público para Twilio Branded Calling (piden URL https que termine en .bmp).
     if (url.pathname === '/brand/bizmind-logo-256.bmp') {
       const bytes = Uint8Array.from(atob(LOGO_BMP_B64), (c) => c.charCodeAt(0));
@@ -189,7 +194,7 @@ class Sesion {
         ? `Hola, le habla el asistente virtual de ${c.dealerName}. ¿Hablo con ${c.firstName}?`
         : `Hi, this is the virtual assistant from ${c.dealerName}. Am I speaking with ${c.firstName}?`;
     this.mensajes.push({ role: 'assistant', content: saludo });
-    this.transcript.push({ role: 'assistant', content: saludo, ts: new Date().toISOString() });
+    this.anotar({ role: 'assistant', content: saludo, ts: new Date().toISOString() });
   }
 
   private async responder(texto: string) {
@@ -198,7 +203,7 @@ class Sesion {
     if (!c) return;
     const miGeneracion = this.generacion;
     this.turnos++;
-    this.transcript.push({ role: 'user', content: texto, ts: new Date().toISOString() });
+    this.anotar({ role: 'user', content: texto, ts: new Date().toISOString() });
     this.mensajes.push({ role: 'user', content: texto });
     if (this.turnos >= MAX_TURNOS) {
       this.mensajes.push({ role: 'system', content: 'La llamada ya es muy larga: despídete amablemente, di que alguien del equipo le llamará, y llama a transfer_to_human.' });
@@ -282,7 +287,7 @@ class Sesion {
     decir(pendiente, true);
 
     this.mensajes.push({ role: 'assistant', content: completo || dicho });
-    this.transcript.push({ role: 'assistant', content: dicho.trim(), ts: new Date().toISOString() });
+    this.anotar({ role: 'assistant', content: dicho.trim(), ts: new Date().toISOString() });
 
     const fin = leerFunciones(llamadas, c) ?? leerEtiquetas(completo, c);
     if (fin) {
@@ -306,11 +311,22 @@ class Sesion {
     this.terminar();
   }
 
+  /** Turno al historial; en la demo, también a la transcripción en vivo de la página. */
+  private anotar(t: Turno) {
+    this.transcript.push(t);
+    this.evento({ kind: 'turn', ...t });
+  }
+
+  private evento(ev: Evento) {
+    if (modoDemo(this.env) && this.env.CALLS) this.ctx.waitUntil(registrar(this.env.CALLS, this.callId, ev));
+  }
+
   private terminar() {
     if (this.cerrada) return;
     this.cerrada = true;
     // Contestó pero colgó sin llegar a nada: «done» (o «no_answer» si nunca habló).
     const resultado: Resultado = this.resultado ?? (this.turnos > 0 ? 'done' : 'no_answer');
+    this.evento({ kind: 'end', outcome: resultado, promisedDate: this.promesa?.date, promisedAmount: this.promesa?.amount, ts: new Date().toISOString() });
     const cuerpo = JSON.stringify({
       callId: this.callId,
       outcome: resultado,

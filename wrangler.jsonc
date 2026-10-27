@@ -2,7 +2,8 @@
 // Twilio ConversationRelay abre un WebSocket aquí (wss://…/ws), nos manda lo que
 // dice el comprador ya transcrito y respondemos texto que Twilio convierte en voz.
 // Despliegue: npx wrangler deploy
-// Secretos (wrangler secret put): MODEL_API_KEY (Meta Model API) y VOICE_KEY (firma HMAC).
+// Secretos (wrangler secret put): MODEL_API_KEY (Meta Model API), VOICE_KEY (firma HMAC),
+// TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN y TWILIO_FROM (línea que marca en la demo).
 // Nunca se ponen secretos en este archivo: el repo es público.
 {
   "name": "paymind-voice-hackathon",
@@ -10,8 +11,11 @@
   "compatibility_date": "2026-09-01",
   "workers_dev": true,
   // Hackathon: solo datos ficticios (src/demo-data.ts), nunca el backend real de PayMind.
-  "vars": { "DEMO": "1" },
+  "vars": { "DEMO": "1", "DEMO_DAILY_CAP": "60" },
   // Memoria por deudor: resumen de cada llamada (clave «memory:<deudor>», últimas 5).
   "kv_namespaces": [{ "binding": "MEMORY", "id": "362c165a7ac84b1196a0ec09bbadecfc" }],
+  // Demo pública: transcripción en vivo, un Durable Object por llamada.
+  "durable_objects": { "bindings": [{ "name": "CALLS", "class_name": "CallLog" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallLog"] }],
   "observability": { "enabled": true }
 }
