@@ -11,5 +11,7 @@
   "workers_dev": true,
   // Hackathon: solo datos ficticios (src/demo-data.ts), nunca el backend real de PayMind.
   "vars": { "DEMO": "1" },
+  // Memoria por deudor: resumen de cada llamada (clave «memory:<deudor>», últimas 5).
+  "kv_namespaces": [{ "binding": "MEMORY", "id": "362c165a7ac84b1196a0ec09bbadecfc" }],
   "observability": { "enabled": true }
 }

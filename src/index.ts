@@ -20,6 +20,7 @@ interface Env {
   VOICE_KEY: string;
   PAYMIND_URL?: string; // sin él (o con DEMO=1) se usan los datos ficticios de demo-data.ts
   DEMO?: string;
+  MEMORY: KVNamespace; // memoria por deudor (hackathon)
 }
 
 type Turno = { role: 'user' | 'assistant'; content: string; ts: string };
@@ -36,7 +37,10 @@ type Contexto = {
   nextPaymentDate: string | null;
   today: string;
   rules: { freeExtensionDays: number; maxExtensionDays: number; allowSplitPayment: boolean; tone: string };
+  memory?: Recuerdo[]; // llamadas anteriores, la más reciente al final
 };
+/** Lo que queda de una llamada para la siguiente (hackathon: memoria por deudor). */
+type Recuerdo = { date: string; outcome: Resultado; promisedDate?: string; promisedAmount?: number; summary: string };
 type Resultado = 'promise' | 'pay_link' | 'human' | 'do_not_call' | 'wrong_person' | 'done' | 'no_answer';
 
 // Hackathon: Muse Spark por la Meta Model API (Responses API, streaming).
@@ -48,12 +52,42 @@ const MAX_TURNOS = 14;
 
 const modoDemo = (env: Env) => env.DEMO === '1' || !env.PAYMIND_URL;
 
-/** Contexto de la llamada en modo demo: callId = «demo-<deudor>-<lo que sea>». */
-function contextoDemo(callId: string): Contexto | null {
-  const d = DEUDORES_DEMO.find((x) => callId.startsWith(`demo-${x.id}`));
+const MAX_RECUERDOS = 5;
+const claveMemoria = (deudor: string) => `memory:${deudor}`;
+const deudorDemo = (callId: string) => DEUDORES_DEMO.find((x) => callId.startsWith(`demo-${x.id}`));
+
+/** Contexto de la llamada en modo demo: callId = «demo-<deudor>-<lo que sea>», con su memoria. */
+async function contextoDemo(callId: string, env: Env): Promise<Contexto | null> {
+  const d = deudorDemo(callId);
   if (!d) return null;
   const today = new Date(Date.now() - 5 * 3_600_000).toISOString().slice(0, 10); // Houston (CDT/CST ≈ UTC-5)
-  return { ...d, ...DEALER_DEMO, today };
+  const memory = (await env.MEMORY.get<Recuerdo[]>(claveMemoria(d.id), 'json').catch(() => null)) ?? [];
+  return { ...d, ...DEALER_DEMO, today, memory };
+}
+
+/** Muse Spark resume la llamada en 1-2 frases para la próxima vez (sin streaming, fuera de la llamada). */
+async function resumir(env: Env, c: Contexto, transcript: Turno[], resultado: Resultado): Promise<string> {
+  const texto = transcript.map((t) => `${t.role === 'user' ? c.firstName : 'Agente'}: ${t.content}`).join('\n');
+  try {
+    const r = await fetch(MODEL_API, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${env.MODEL_API_KEY}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: MODELO,
+        reasoning: { effort: 'low' },
+        max_output_tokens: 600,
+        instructions:
+          'Resume esta llamada de cobranza en máximo 2 frases, en español, para que el agente la recuerde en la próxima llamada: ' +
+          'qué dijo el cliente (motivo del atraso, situación, compromisos, tono) y cómo terminó. Sin saludos ni datos inventados.',
+        input: `Resultado: ${resultado}\n\n${texto}`,
+      }),
+    });
+    const j = (await r.json()) as { output?: { type: string; content?: { text?: string }[] }[] };
+    const msg = j.output?.find((o) => o.type === 'message');
+    return msg?.content?.map((x) => x.text ?? '').join('').trim() || `Llamada terminada: ${resultado}.`;
+  } catch {
+    return `Llamada terminada: ${resultado}.`;
+  }
 }
 
 export default {
@@ -107,7 +141,7 @@ class Sesion {
     private ctx: ExecutionContext,
   ) {
     // El contexto se pide en cuanto se abre el socket (no hay que esperar al setup).
-    this.ctxDatos = modoDemo(env) ? Promise.resolve(contextoDemo(callId)) : fetch(`${env.PAYMIND_URL}/api/collection/voice/context?c=${encodeURIComponent(callId)}`, {
+    this.ctxDatos = modoDemo(env) ? contextoDemo(callId, env) : fetch(`${env.PAYMIND_URL}/api/collection/voice/context?c=${encodeURIComponent(callId)}`, {
       headers: { 'x-voice-key': env.VOICE_KEY },
     })
       .then((r) => (r.ok ? (r.json() as Promise<Contexto>) : null))
@@ -287,6 +321,18 @@ class Sesion {
     const mandar = async () => {
       if (modoDemo(this.env)) {
         console.log('[demo] resultado', cuerpo); // en demo no hay backend: queda en los logs del Worker
+        const c = await this.ctxDatos;
+        const d = deudorDemo(this.callId);
+        if (!c || !d || this.turnos === 0) return; // sin conversación no hay nada que recordar
+        const recuerdo: Recuerdo = {
+          date: c.today,
+          outcome: resultado,
+          promisedDate: this.promesa?.date,
+          promisedAmount: this.promesa?.amount,
+          summary: await resumir(this.env, c, this.transcript, resultado),
+        };
+        const memoria = [...(c.memory ?? []), recuerdo].slice(-MAX_RECUERDOS);
+        await this.env.MEMORY.put(claveMemoria(d.id), JSON.stringify(memoria));
         return;
       }
       for (let i = 0; i < 3; i++) {
@@ -394,6 +440,14 @@ function instrucciones(c: Contexto): string {
       ? `Tiene un saldo vencido de ${dinero(c.pastDue)} (${c.daysPastDue} días de atraso). Su pago normal es de ${dinero(c.paymentAmount)}.`
       : `No tiene atraso; su próximo pago es de ${dinero(c.paymentAmount)}${c.nextPaymentDate ? ` el ${c.nextPaymentDate}` : ''}. La llamada es solo un recordatorio amable.`;
   const noEsEl = fraseNoEsEl(c);
+  // Hackathon: memoria por deudor. Solo se usa DESPUÉS de confirmar la identidad (regla 1).
+  const memoria = c.memory?.length
+    ? `
+LLAMADAS ANTERIORES (lo que recuerdas de este cliente; la última al final):
+${c.memory.map((m) => `- ${m.date}: ${m.summary}${m.promisedDate ? ` Prometió pagar $${m.promisedAmount} el ${m.promisedDate}.` : ''}`).join('\n')}
+Cómo usarlas: una vez confirmada la identidad, menciónalo con naturalidad en tu primera explicación ("la última vez me dijo que…"). Si había una promesa y la fecha ya pasó sin pago (sigue el saldo vencido), recuérdasela con empatía, sin regañar, y busca una nueva fecha. No repitas preguntas que ya respondió antes.
+`
+    : '';
   const idioma = c.lang === 'es' ? 'Habla SIEMPRE en español neutro (de EE. UU.), de usted.' : 'Always speak English.';
   // Calendario de los próximos días: el modelo se equivoca al calcular «el viernes».
   const dias = c.lang === 'es' ? ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'] : ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -408,7 +462,7 @@ DATOS (solo para el cliente, nunca para terceros):
 - Nombre: ${c.firstName}
 - ${situacion}
 - Teléfono del concesionario: ${c.dealerPhone || 'el de siempre'}
-
+${memoria}
 REGLAS OBLIGATORIAS:
 1. Ya preguntaste "¿Hablo con ${c.firstName}?". Si la persona NO lo confirma claramente (dice que no, que no está, que es otra persona, o no sabe), NO digas por qué llamas: nada de pagos, montos, cuentas, deudas ni del vehículo, aunque te pregunte. Responde EXACTAMENTE: "${noEsEl}" y llama a wrong_person.
 2. Si confirma que es ${c.firstName}: explica brevemente el motivo de la llamada con los DATOS y pregunta cuándo puede pagar.
