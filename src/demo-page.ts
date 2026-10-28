@@ -140,6 +140,29 @@ export const PAGINA = /* html */ `<!doctype html>
   .reset { background: none; border: 1px solid var(--line-2); color: var(--muted); font: 500 11px/1 var(--mono); padding: 7px 10px; border-radius: 8px; cursor: pointer; letter-spacing: .04em; }
   .reset:hover { color: var(--text); border-color: var(--text); }
 
+  /* acta de cumplimiento de la llamada */
+  .audit { margin-top: 12px; padding: 16px; border-radius: 14px; border: 1px solid var(--line-2); background: var(--panel-2); animation: rise .4s ease-out both; }
+  .audit-h { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .audit-h b { font: 600 12px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .score { font: 800 22px/1 var(--display); color: var(--teal); }
+  .score.bad { color: var(--red); }
+  .checks { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+  .checks li { display: grid; grid-template-columns: 18px 1fr auto; gap: 8px; align-items: start; font-size: 14px; }
+  .checks li i { font-style: normal; font-weight: 800; color: var(--teal); }
+  .checks li.fail i { color: var(--red); }
+  .checks li small { display: block; color: var(--muted); font: 400 12px/1.4 var(--mono); }
+  .checks li em { font: 500 10px/1 var(--mono); font-style: normal; letter-spacing: .06em; text-transform: uppercase; padding: 4px 6px; border-radius: 5px; border: 1px solid var(--line-2); color: var(--muted); }
+  .checks li em.code { color: var(--amber); border-color: rgba(255,173,66,.4); }
+
+  /* tablero del día */
+  .today { margin-top: 56px; display: grid; grid-template-columns: repeat(6, 1fr); gap: 1px; border-radius: 18px; overflow: hidden; border: 1px solid var(--line); background: var(--line); }
+  @media (max-width: 900px) { .today { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 520px) { .today { grid-template-columns: repeat(2, 1fr); } }
+  .today div { background: var(--ink-2); padding: 16px 18px; }
+  .today strong { display: block; font: 800 28px/1 var(--display); letter-spacing: -.02em; }
+  .today span { font: 400 11px/1.4 var(--mono); color: var(--muted); letter-spacing: .04em; }
+  .today-h { margin: 56px 0 -40px; font: 600 13px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+
   /* planificador: agenda del día que decide Muse */
   .planner { margin-top: 56px; }
   .planner-h { display: flex; justify-content: space-between; align-items: end; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
@@ -230,6 +253,7 @@ export const PAGINA = /* html */ `<!doctype html>
         <span class="chip">Tool calling</span>
         <span class="chip">Per-buyer memory</span>
         <span class="chip">Agentic call planning</span>
+        <span class="chip">Compliance audit</span>
         <span class="chip">EN / ES</span>
         <span class="chip">Twilio ConversationRelay</span>
       </div>
@@ -253,6 +277,9 @@ export const PAGINA = /* html */ `<!doctype html>
       <div class="console-foot"><a class="powered" href="https://dev.meta.ai/" target="_blank" rel="noopener"><svg class="inf" viewBox="0 0 48 24" aria-hidden="true"><defs><linearGradient id="g2" x1="0" x2="1"><stop offset="0" stop-color="#0081fb"/><stop offset=".55" stop-color="#0064e0"/><stop offset="1" stop-color="#7ab8ff"/></linearGradient></defs><path d="M12 4c-4.4 0-8 3.6-8 8s3.6 8 8 8c5 0 7-5 12-8s7-8 12-8c4.4 0 8 3.6 8 8s-3.6 8-8 8c-5 0-7-5-12-8S17 4 12 4z" fill="none" stroke="url(#g2)" stroke-width="3.4" stroke-linecap="round"/></svg><span>Powered by <b>Muse</b> · <span class="meta">Meta</span></span></a></div>
     </div>
   </section>
+
+  <div class="today-h">Today on Lone Star Motors' line · live</div>
+  <section class="today" id="today"></section>
 
   <section class="board">
     <div class="panel">
@@ -281,7 +308,7 @@ export const PAGINA = /* html */ `<!doctype html>
       <div class="step"><b>Twilio dials</b><p>ConversationRelay streams the buyer's words, already transcribed, to a Cloudflare Worker over WebSocket.</p></div>
       <div class="step"><b>Muse Spark talks</b><p>Responses API, streaming, <code>minimal</code> reasoning, so the first sentence is spoken in about a second.</p></div>
       <div class="step"><b>Tools decide</b><p><code>record_promise</code>, <code>send_pay_link</code>, <code>transfer_to_human</code>… The dealer's rules are enforced in code.</p></div>
-      <div class="step"><b>It remembers</b><p>After hanging up, Muse Spark writes a two-line case note. The next call starts from there.</p></div>
+      <div class="step"><b>It remembers, and gets audited</b><p>After hanging up, Muse Spark writes a case note for the next call, and a second Muse Spark pass audits the transcript against the collection rules.</p></div>
     </div>
     <div class="tries">
       <div class="try"><b>Promise, then call back.</b> Agree to pay on Friday. Call again: the agent brings up your promise.</div>
@@ -348,6 +375,7 @@ async function init() {
     (b.pastDue > 0 ? money(b.pastDue) + ' past due · ' + b.daysPastDue + ' days late' : 'Up to date · next ' + money(b.paymentAmount)) + '</small></span><span class="lang">' + b.lang.toUpperCase() + '</span></button>').join('');
   document.querySelectorAll('.buyer').forEach((el) => el.addEventListener('click', () => pick(el.dataset.id)));
   pick(buyers[0].id);
+  loadToday();
   fetch('/api/plan').then((x) => x.json()).then((j) => { if (j.plan) { renderPlan(j.plan); $('planLabel').textContent = 'Plan again'; } }).catch(() => {});
 }
 
@@ -390,7 +418,20 @@ $('go').addEventListener('click', async () => {
   }
 });
 
-let shown = 0, endedAt = 0, smsShown = false;
+function renderAudit(a) {
+  const ok = a.passed === a.total;
+  $('outcome').insertAdjacentHTML('beforeend', '<div class="audit"><div class="audit-h"><b>Compliance audit · ' + esc(a.model) + '</b><span class="score' + (ok ? '' : ' bad') + '">' + a.passed + '/' + a.total + '</span></div><ul class="checks">' +
+    a.checks.map((c) => '<li class="' + (c.pass ? '' : 'fail') + '"><i>' + (c.pass ? '✓' : '✗') + '</i><span>' + esc(c.label) + '<small>' + esc(c.note) + '</small></span><em class="' + c.by + '">' + (c.by === 'code' ? 'code' : 'Muse') + '</em></li>').join('') + '</ul></div>');
+}
+async function loadToday() {
+  const r = await fetch('/api/stats').then((x) => x.json()).catch(() => null);
+  if (!r) return;
+  const s = r.stats;
+  const cells = [[s.calls, 'calls answered'], [money(s.promised), 'promised to pay'], [s.payLinks, 'pay links texted'], [s.humans, 'handed to a person'], [s.wrongPerson + s.doNotCall, 'protected (wrong person / do-not-call)'], [s.audits ? Math.round(100 * s.auditsClean / s.audits) + '%' : '—', 'calls with a clean audit']];
+  $('today').innerHTML = cells.map((c) => '<div><strong>' + c[0] + '</strong><span>' + c[1] + '</span></div>').join('');
+}
+
+let shown = 0, endedAt = 0, smsShown = false, auditShown = false;
 async function follow(callId) {
   const r = await fetch('/api/transcript?c=' + callId).then((x) => x.json()).catch(() => null);
   if (!r) return;
@@ -415,10 +456,13 @@ async function follow(callId) {
     smsShown = true;
     $('outcome').insertAdjacentHTML('beforeend', '<a class="paylink" href="' + esc(sms.url) + '" target="_blank" rel="noopener"><span>💬 Pay link texted to your phone · ' + money(sms.amount) + '</span><b>Open the test pay link →</b></a><p class="hint">Stripe test mode: card 4242 4242 4242 4242, any future date, any CVC.</p>');
   }
-  // Tras colgar se sigue mirando ~25 s por si llega el SMS con el enlace.
-  if (endedAt && (sms || Date.now() - endedAt > 25000)) {
+  const audit = r.events.find((e) => e.kind === 'audit');
+  if (audit && !auditShown) { auditShown = true; renderAudit(audit); loadToday(); }
+  // Tras colgar se sigue mirando hasta que llega el acta (o ~45 s).
+  if (endedAt && (audit || Date.now() - endedAt > 45000)) {
     clearInterval(poll);
-    shown = 0; endedAt = 0; smsShown = false;
+    shown = 0; endedAt = 0; smsShown = false; auditShown = false;
+    loadToday();
   }
 }
 

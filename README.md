@@ -26,6 +26,7 @@ Big lenders have call centers for this. A 40-car lot on the south side of Housto
 | 🛠️ **Acts with tools** | Each call ends in exactly one outcome, chosen by Muse Spark through function calling: `record_promise`, `send_pay_link`, `transfer_to_human`, `do_not_call`, `wrong_person` or `end_call`. |
 | 💳 **Gets paid** | On a promise, the buyer gets a text with a secure Stripe pay link for the agreed amount. |
 | 🗂️ **Remembers** | After hanging up, Muse Spark writes a two-line case note. The next call opens with it ("Last time you told me you'd pay Friday…"). |
+| ⚖️ **Audits itself** | Every call gets a **compliance audit**: a separate Muse Spark pass checks the transcript against 7 collection rules, and the code checks what can be verified without AI. The scorecard appears on the page, and the day's results feed the dealer's board. |
 
 ## Try it (2 minutes)
 
@@ -38,6 +39,7 @@ Things to try:
 - **Say you're not the buyer.** It won't reveal anything about the debt.
 - **Say you lost your job.** It doesn't push. It hands you to a person on the team.
 - **Ask not to be called again.** The planner skips you from then on, and the dialer refuses to call.
+- **After any call**, read the compliance audit under the transcript and watch the daily board update.
 
 > All dealers, buyers and amounts are fictitious. *Lone Star Motors* does not exist. Stripe runs in **test mode**, so no real money moves. The demo is limited to US numbers, 3 calls per number per day, and a global daily cap.
 
@@ -58,13 +60,14 @@ flowchart LR
   subgraph After["3 · After the call"]
     W --> S[Stripe Checkout, test mode<br/>+ SMS pay link]
     W --> M3{{Muse Spark<br/>case-note summary}} --> KV2[(KV: memory per buyer)]
+    W --> M4{{Muse Spark<br/>compliance audit: submit_audit}} --> ST[(KV: dealer's daily board)]
   end
   KV1 --> W
   KV2 --> P
   KV2 --> W
 ```
 
-### Where Muse Spark is used (4 different jobs)
+### Where Muse Spark is used (5 different jobs)
 
 | Job | Call | Settings |
 |---|---|---|
@@ -72,6 +75,7 @@ flowchart LR
 | **Voice agent**: the live conversation | `index.ts` → streaming Responses API + 6 outcome tools | `reasoning.effort: minimal` (~1 s to first word) |
 | **Closing check**: "is this call actually over?" | second pass with `continue_conversation` as an extra tool | `minimal` |
 | **Case notes**: the memory for the next call | two-sentence summary of the transcript | `minimal` |
+| **Compliance auditor**: a verifiable agent | `audit.ts` → `submit_audit` with one verdict + evidence per rule | `low` |
 
 ### Safety is in the code, not just the prompt
 
@@ -81,6 +85,7 @@ The model proposes and the code decides. Even if Muse Spark gets something wrong
 - **Promises are validated.** The date has to fall within the window the plan allows (never more than the dealer's maximum extension), and the amount must be positive. Anything else goes to a person.
 - **Calling hours, do-not-call and active promises** are enforced by the planner and by the dialer, whatever the model proposed.
 - **The call never hangs.** If the agent wraps up without choosing an outcome, a second Muse Spark pass decides. Every hang-up is preceded by a goodbye.
+- **Every call is audited.** Identity before disclosure, no threats, no invented terms, no card numbers by phone, respectful tone, language and outcome are judged by Muse Spark with evidence. Third-party disclosure and promise limits are checked in code. We tested the auditor on a deliberately bad call (debt told to the buyer's sister, repossession threat, invented discount): it failed it, 3/8.
 - **No secrets and no real data** in this repo. Keys are Cloudflare secrets, and the pay links refuse to run with anything other than a Stripe `sk_test_` key.
 
 ## What existed before vs. what was built during the hackathon
@@ -97,7 +102,8 @@ The hackathon rules ask to show only what was built during the event. Commit `7f
 | `2db52cf`, `e095749` | Demo page redesigned as a live call console |
 | `9236ba6` | **SMS pay link**: Stripe Checkout (test mode) for the promised amount |
 | `e1250b8` | **Agentic call planning**: Muse Spark plans the day; compliance enforced in code |
-| _latest_ | Dialer refuses do-not-call buyers; promises validated against the plan's window; README + MIT license |
+| `56f6f3a` | Dialer refuses do-not-call buyers; promises validated against the plan's window; README + MIT license |
+| _latest_ | **Compliance audit** of every call (verifiable agent) + the dealer's live daily board |
 
 See it all: `git diff 7fa0cc7..main`.
 
@@ -120,6 +126,7 @@ You also need a KV namespace (`MEMORY`) and the `CallLog` Durable Object, both d
 |---|---|
 | `src/index.ts` | WebSocket session with Twilio, streaming Muse Spark, outcome tools, closing check, memory |
 | `src/planner.ts` | Agentic daily planner and its compliance guardrails |
+| `src/audit.ts` | Post-call compliance audit + daily board counters |
 | `src/demo.ts` | Demo API: outbound calls, rate limits, live transcript, Stripe pay link + SMS |
 | `src/demo-page.ts` | The public demo page (single HTML file) |
 | `src/demo-data.ts` | Fictitious dealer and buyers |

@@ -16,6 +16,7 @@ import { LOGO_BMP_B64 } from './logo';
 import { DEALER_DEMO, DEUDORES_DEMO } from './demo-data';
 import { CallLog, enviarEnlacePago, registrar, rutaDemo, type DemoEnv, type Evento } from './demo';
 import { guionDelPlan, type Paso } from './planner';
+import { auditar, sumarAlDia } from './audit';
 
 export { CallLog };
 
@@ -400,12 +401,19 @@ class Sesion {
           const url = await enviarEnlacePago(this.env, this.callId, { firstName: c.firstName, vehicle: c.vehicle, dealerName: c.dealerName, lang: c.lang }, monto);
           if (url) this.evento({ kind: 'sms', url, amount: monto, ts: new Date().toISOString() });
         }
+        // Resumen para la memoria y auditoría de cumplimiento, en paralelo.
+        const [summary, acta] = await Promise.all([
+          resumir(this.env, c, this.transcript, resultado),
+          auditar(this.env.MODEL_API_KEY, { ...c, maxExtensionDays: c.rules.maxExtensionDays }, this.transcript, resultado, this.promesa ?? undefined),
+        ]);
+        if (acta) this.evento({ kind: 'audit', ...acta, ts: new Date().toISOString() });
+        await sumarAlDia(this.env.MEMORY, c.today, resultado, this.promesa?.amount ?? 0, acta);
         const recuerdo: Recuerdo = {
           date: c.today,
           outcome: resultado,
           promisedDate: this.promesa?.date,
           promisedAmount: this.promesa?.amount,
-          summary: await resumir(this.env, c, this.transcript, resultado),
+          summary,
         };
         const memoria = [...(c.memory ?? []), recuerdo].slice(-MAX_RECUERDOS);
         await this.env.MEMORY.put(claveMemoria(d.id), JSON.stringify(memoria));

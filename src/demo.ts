@@ -8,6 +8,7 @@
 import { DEUDORES_DEMO, DEALER_DEMO } from './demo-data';
 import { PAGINA } from './demo-page';
 import { planificar } from './planner';
+import { leerDia, type Acta } from './audit';
 
 export interface DemoEnv {
   MEMORY: KVNamespace;
@@ -25,7 +26,8 @@ export type Evento =
   | { kind: 'turn'; role: 'user' | 'assistant'; content: string; ts: string }
   | { kind: 'status'; status: string; ts: string }
   | { kind: 'end'; outcome: string; promisedDate?: string; promisedAmount?: number; ts: string }
-  | { kind: 'sms'; url: string; amount: number; ts: string };
+  | { kind: 'sms'; url: string; amount: number; ts: string }
+  | ({ kind: 'audit'; ts: string } & Acta);
 
 const POR_TELEFONO = 3;
 const PLANES_POR_DIA = 200; // cada plan son 1-2 peticiones a Muse
@@ -79,6 +81,9 @@ export async function rutaDemo(req: Request, env: DemoEnv, url: URL): Promise<Re
     const c = url.searchParams.get('c') || '';
     if (!/^demo-[a-z]+-[0-9a-f]{16}$/.test(c)) return json({ error: 'bad call id' }, 400);
     return env.CALLS.get(env.CALLS.idFromName(c)).fetch('https://log/read');
+  }
+  if (req.method === 'GET' && url.pathname === '/api/stats') {
+    return json({ date: hoy(), stats: await leerDia(env.MEMORY, hoy()) });
   }
   if (req.method === 'GET' && url.pathname === '/api/plan') {
     return json({ plan: await env.MEMORY.get('plan:last', 'json') });
