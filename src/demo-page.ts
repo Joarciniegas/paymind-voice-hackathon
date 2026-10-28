@@ -154,6 +154,14 @@ export const PAGINA = /* html */ `<!doctype html>
   .checks li em { font: 500 10px/1 var(--mono); font-style: normal; letter-spacing: .06em; text-transform: uppercase; padding: 4px 6px; border-radius: 5px; border: 1px solid var(--line-2); color: var(--muted); }
   .checks li em.code { color: var(--amber); border-color: rgba(255,173,66,.4); }
 
+  .voice { margin-top: 12px; border-radius: 14px; border: 1px solid rgba(0,129,251,.35); background: rgba(0,129,251,.06); animation: rise .4s ease-out both; }
+  .voice summary { cursor: pointer; padding: 12px 16px; font: 600 12px/1.4 var(--mono); letter-spacing: .06em; color: #7ab8ff; list-style: none; }
+  .voice summary::-webkit-details-marker { display: none; }
+  .voice summary span { color: var(--muted); font-weight: 400; letter-spacing: 0; }
+  .voice ol { margin: 0; padding: 0 16px 14px; list-style: none; display: grid; gap: 6px; }
+  .voice li { font-size: 14px; } .voice li b { font: 700 11px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; margin-right: 6px; }
+  .voice li.agent b { color: var(--amber); } .voice li.buyer b { color: var(--teal); }
+
   /* tablero del día */
   .today { margin-top: 56px; display: grid; grid-template-columns: repeat(6, 1fr); gap: 1px; border-radius: 18px; overflow: hidden; border: 1px solid var(--line); background: var(--line); }
   @media (max-width: 900px) { .today { grid-template-columns: repeat(3, 1fr); } }
@@ -254,6 +262,7 @@ export const PAGINA = /* html */ `<!doctype html>
         <span class="chip">Per-buyer memory</span>
         <span class="chip">Agentic call planning</span>
         <span class="chip">Compliance audit</span>
+        <span class="chip">Muse Wonder + Voice Transcribe</span>
         <span class="chip">EN / ES</span>
         <span class="chip">Twilio ConversationRelay</span>
       </div>
@@ -271,7 +280,7 @@ export const PAGINA = /* html */ `<!doctype html>
         <label for="phone">Your phone · US only</label>
         <div class="phone"><span>+1</span><input id="phone" type="tel" inputmode="tel" autocomplete="tel-national" placeholder="(713) 555-0123"></div>
       </div>
-      <label class="consent"><input id="consent" type="checkbox"><span>I agree to receive one automated demo call at this number. No real debt: every name and amount is fictitious.</span></label>
+      <label class="consent"><input id="consent" type="checkbox"><span>I agree to receive one automated demo call at this number. It is recorded only to transcribe and audit it, and the recording is deleted right after. No real debt: every name and amount is fictitious.</span></label>
       <button class="go" id="go"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/></svg><span id="goLabel">Call me</span></button>
       <div class="msg" id="msg" role="status"></div>
       <div class="console-foot"><a class="powered" href="https://dev.meta.ai/" target="_blank" rel="noopener"><svg class="inf" viewBox="0 0 48 24" aria-hidden="true"><defs><linearGradient id="g2" x1="0" x2="1"><stop offset="0" stop-color="#0081fb"/><stop offset=".55" stop-color="#0064e0"/><stop offset="1" stop-color="#7ab8ff"/></linearGradient></defs><path d="M12 4c-4.4 0-8 3.6-8 8s3.6 8 8 8c5 0 7-5 12-8s7-8 12-8c4.4 0 8 3.6 8 8s-3.6 8-8 8c-5 0-7-5-12-8S17 4 12 4z" fill="none" stroke="url(#g2)" stroke-width="3.4" stroke-linecap="round"/></svg><span>Powered by <b>Muse</b> · <span class="meta">Meta</span></span></a></div>
@@ -418,9 +427,13 @@ $('go').addEventListener('click', async () => {
   }
 });
 
+function renderVoice(v) {
+  $('outcome').insertAdjacentHTML('beforeend', '<details class="voice"><summary>▸ Independent transcript · ' + esc(v.model) + ' <span>· speakers separated from the call recording (' + v.turns.length + ' turns)</span></summary><ol>' +
+    v.turns.map((t) => '<li class="' + t.who + '"><b>' + (t.who === 'agent' ? 'Agent' : 'Buyer') + '</b>' + esc(t.text) + '</li>').join('') + '</ol></details>');
+}
 function renderAudit(a) {
   const ok = a.passed === a.total;
-  $('outcome').insertAdjacentHTML('beforeend', '<div class="audit"><div class="audit-h"><b>Compliance audit · ' + esc(a.model) + '</b><span class="score' + (ok ? '' : ' bad') + '">' + a.passed + '/' + a.total + '</span></div><ul class="checks">' +
+  $('outcome').insertAdjacentHTML('beforeend', '<div class="audit"><div class="audit-h"><b>Compliance audit · ' + esc(a.model) + (a.source === 'recording' ? ' · on the recording transcript' : '') + '</b><span class="score' + (ok ? '' : ' bad') + '">' + a.passed + '/' + a.total + '</span></div><ul class="checks">' +
     a.checks.map((c) => '<li class="' + (c.pass ? '' : 'fail') + '"><i>' + (c.pass ? '✓' : '✗') + '</i><span>' + esc(c.label) + '<small>' + esc(c.note) + '</small></span><em class="' + c.by + '">' + (c.by === 'code' ? 'code' : 'Muse') + '</em></li>').join('') + '</ul></div>');
 }
 async function loadToday() {
@@ -431,7 +444,7 @@ async function loadToday() {
   $('today').innerHTML = cells.map((c) => '<div><strong>' + c[0] + '</strong><span>' + c[1] + '</span></div>').join('');
 }
 
-let shown = 0, endedAt = 0, smsShown = false, auditShown = false;
+let shown = 0, endedAt = 0, smsShown = false, auditShown = false, voiceShown = false;
 async function follow(callId) {
   const r = await fetch('/api/transcript?c=' + callId).then((x) => x.json()).catch(() => null);
   if (!r) return;
@@ -456,12 +469,14 @@ async function follow(callId) {
     smsShown = true;
     $('outcome').insertAdjacentHTML('beforeend', '<a class="paylink" href="' + esc(sms.url) + '" target="_blank" rel="noopener"><span>💬 Pay link texted to your phone · ' + money(sms.amount) + '</span><b>Open the test pay link →</b></a><p class="hint">Stripe test mode: card 4242 4242 4242 4242, any future date, any CVC.</p>');
   }
+  const voice = r.events.find((e) => e.kind === 'voice');
+  if (voice && !voiceShown) { voiceShown = true; renderVoice(voice); }
   const audit = r.events.find((e) => e.kind === 'audit');
   if (audit && !auditShown) { auditShown = true; renderAudit(audit); loadToday(); }
-  // Tras colgar se sigue mirando hasta que llega el acta (o ~45 s).
-  if (endedAt && (audit || Date.now() - endedAt > 45000)) {
+  // Tras colgar se sigue mirando hasta que llega el acta (la grabación tarda; tope ~2 min).
+  if (endedAt && (audit || Date.now() - endedAt > 120000)) {
     clearInterval(poll);
-    shown = 0; endedAt = 0; smsShown = false; auditShown = false;
+    shown = 0; endedAt = 0; smsShown = false; auditShown = false; voiceShown = false;
     loadToday();
   }
 }

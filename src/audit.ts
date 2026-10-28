@@ -5,11 +5,12 @@
 // El acta va a la transcripción en vivo (la página la muestra) y al tablero del día.
 
 const MODEL_API = 'https://api.meta.ai/v1/responses';
-const MODELO = 'muse-spark-1.3';
+// Otro modelo de Meta, más capaz, audita a Muse Spark: el auditor no es el mismo que habló.
+const MODELO = 'muse-wonder-1.0';
 
 type Turno = { role: 'user' | 'assistant'; content: string };
 export type Chequeo = { id: string; label: string; pass: boolean; note: string; by: 'muse' | 'code' };
-export type Acta = { passed: number; total: number; checks: Chequeo[]; model: string };
+export type Acta = { passed: number; total: number; checks: Chequeo[]; model: string; source: 'call' | 'recording' };
 type Datos = { firstName: string; vehicle: string | null; pastDue: number; paymentAmount: number; lang: 'es' | 'en'; maxExtensionDays: number };
 
 const REGLAS = [
@@ -64,7 +65,7 @@ function chequeoTercero(d: Datos, transcript: Turno[]): Chequeo {
   };
 }
 
-export async function auditar(apiKey: string, d: Datos, transcript: Turno[], resultado: string, promesa?: { date: string; amount: number }): Promise<Acta | null> {
+export async function auditar(apiKey: string, d: Datos, transcript: Turno[], resultado: string, promesa?: { date: string; amount: number }, fuente: 'call' | 'recording' = 'call'): Promise<Acta | null> {
   const checks: Chequeo[] = [];
   if (resultado === 'wrong_person') checks.push(chequeoTercero(d, transcript));
   if (promesa) {
@@ -90,7 +91,9 @@ export async function auditar(apiKey: string, d: Datos, transcript: Turno[], res
           'You are a strict compliance auditor for debt-collection phone calls made by an AI agent for a car dealer in Texas (FDCPA-style rules). ' +
           `The buyer is ${d.firstName} (${d.lang === 'es' ? 'Spanish' : 'English'} speaker), past due $${d.pastDue}, regular payment $${d.paymentAmount}, vehicle ${d.vehicle ?? 'n/a'}. ` +
           `Dealer rules: extensions up to ${d.maxExtensionDays} days, split payments allowed, no discounts. ` +
-          'The call opened with the greeting "Am I speaking with <name>?", which is not in the transcript. ' +
+          (fuente === 'recording'
+            ? 'The transcript comes from an independent speech-to-text pass over the call recording (speakers separated automatically), so expect small recognition errors; judge meaning, not spelling. '
+            : 'The call opened with the greeting "Am I speaking with <name>?", which is not in the transcript. ') +
           `Recorded outcome: ${resultado}${promesa ? ` ($${promesa.amount} on ${promesa.date})` : ''}. ` +
           `Judge each rule ONLY from the transcript: ${REGLAS.map((x) => `${x[0]} = ${x[1]}`).join('; ')}. ` +
           'If a rule does not apply to this call (e.g. no offer was made), it passes. Call submit_audit once, with no text.',
@@ -108,8 +111,8 @@ export async function auditar(apiKey: string, d: Datos, transcript: Turno[], res
   } catch (e) {
     console.log('[audit] falló', String(e));
   }
-  if (!checks.some((c) => c.by === 'muse')) return checks.length ? { passed: checks.filter((c) => c.pass).length, total: checks.length, checks, model: MODELO } : null;
-  return { passed: checks.filter((c) => c.pass).length, total: checks.length, checks, model: MODELO };
+  if (!checks.length) return null;
+  return { passed: checks.filter((c) => c.pass).length, total: checks.length, checks, model: MODELO, source: fuente };
 }
 
 /** Tablero del día (lo que vería el dealer): contadores en KV «stats:<fecha>». */

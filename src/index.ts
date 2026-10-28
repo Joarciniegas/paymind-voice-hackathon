@@ -17,6 +17,7 @@ import { DEALER_DEMO, DEUDORES_DEMO } from './demo-data';
 import { CallLog, enviarEnlacePago, registrar, rutaDemo, type DemoEnv, type Evento } from './demo';
 import { guionDelPlan, type Paso } from './planner';
 import { auditar, sumarAlDia } from './audit';
+import type { Pendiente } from './recording';
 
 export { CallLog };
 
@@ -105,7 +106,7 @@ export default {
     const url = new URL(req.url);
     if (url.pathname === '/health') return new Response('ok');
     // Hackathon: página pública de la demo y su API.
-    const demo = modoDemo(env) ? await rutaDemo(req, env, url) : null;
+    const demo = modoDemo(env) ? await rutaDemo(req, env, url, ctx) : null;
     if (demo) return demo;
     // Logo público para Twilio Branded Calling (piden URL https que termine en .bmp).
     if (url.pathname === '/brand/bizmind-logo-256.bmp') {
@@ -401,13 +402,21 @@ class Sesion {
           const url = await enviarEnlacePago(this.env, this.callId, { firstName: c.firstName, vehicle: c.vehicle, dealerName: c.dealerName, lang: c.lang }, monto);
           if (url) this.evento({ kind: 'sms', url, amount: monto, ts: new Date().toISOString() });
         }
-        // Resumen para la memoria y auditoría de cumplimiento, en paralelo.
-        const [summary, acta] = await Promise.all([
-          resumir(this.env, c, this.transcript, resultado),
-          auditar(this.env.MODEL_API_KEY, { ...c, maxExtensionDays: c.rules.maxExtensionDays }, this.transcript, resultado, this.promesa ?? undefined),
-        ]);
-        if (acta) this.evento({ kind: 'audit', ...acta, ts: new Date().toISOString() });
-        await sumarAlDia(this.env.MEMORY, c.today, resultado, this.promesa?.amount ?? 0, acta);
+        // Auditoría de cumplimiento. En una llamada real hay grabación: se audita la transcripción
+        // independiente de Muse Voice Transcribe cuando Twilio la entregue (recording.ts).
+        const datos = { ...c, maxExtensionDays: c.rules.maxExtensionDays };
+        const conGrabacion = !!(await this.env.MEMORY.get(`call:${this.callId}`));
+        const auditoria = async () => {
+          if (conGrabacion) {
+            const p: Pendiente = { datos, resultado, promesa: this.promesa ?? undefined, transcript: this.transcript, fecha: c.today };
+            await this.env.MEMORY.put(`auditctx:${this.callId}`, JSON.stringify(p), { expirationTtl: 3600 });
+            return;
+          }
+          const acta = await auditar(this.env.MODEL_API_KEY, datos, this.transcript, resultado, this.promesa ?? undefined);
+          if (acta) this.evento({ kind: 'audit', ...acta, ts: new Date().toISOString() });
+          await sumarAlDia(this.env.MEMORY, c.today, resultado, this.promesa?.amount ?? 0, acta);
+        };
+        const [summary] = await Promise.all([resumir(this.env, c, this.transcript, resultado), auditoria()]);
         const recuerdo: Recuerdo = {
           date: c.today,
           outcome: resultado,

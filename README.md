@@ -1,7 +1,7 @@
 # PayMind Voice: bilingual AI collections calls for Buy-Here-Pay-Here car dealers
 
 **▶ Live demo (it really calls your phone):** https://paymind-voice-hackathon.joarciniegas.workers.dev
-**Built with:** Muse Spark 1.3 (Meta Model API) · Twilio ConversationRelay · Cloudflare Workers, KV and Durable Objects · Stripe (test mode)
+**Built with:** three Meta models (Muse Spark 1.3, Muse Wonder 1.0, Muse Voice Transcribe 1.0) on the Meta Model API · Twilio ConversationRelay · Cloudflare Workers, KV and Durable Objects · Stripe (test mode)
 **Team:** [BizMind AI Agency](https://bizmind.us), Houston, TX · Meta Global AI Developer Hackathon, Startup Track (*Build for Your World*)
 
 ---
@@ -26,7 +26,7 @@ Big lenders have call centers for this. A 40-car lot on the south side of Housto
 | 🛠️ **Acts with tools** | Each call ends in exactly one outcome, chosen by Muse Spark through function calling: `record_promise`, `send_pay_link`, `transfer_to_human`, `do_not_call`, `wrong_person` or `end_call`. |
 | 💳 **Gets paid** | On a promise, the buyer gets a text with a secure Stripe pay link for the agreed amount. |
 | 🗂️ **Remembers** | After hanging up, Muse Spark writes a two-line case note. The next call opens with it ("Last time you told me you'd pay Friday…"). |
-| ⚖️ **Audits itself** | Every call gets a **compliance audit**: a separate Muse Spark pass checks the transcript against 7 collection rules, and the code checks what can be verified without AI. The scorecard appears on the page, and the day's results feed the dealer's board. |
+| ⚖️ **Audits itself** | Every call gets an independent **compliance audit**. **Muse Voice Transcribe** re-transcribes the call recording with speaker labels, then **Muse Wonder** (a different, stronger Meta model than the one that spoke) checks it against 7 collection rules. The code checks what can be verified without AI. The scorecard appears on the page, the day's results feed the dealer's board, and the recording is deleted right after. |
 
 ## Try it (2 minutes)
 
@@ -60,22 +60,24 @@ flowchart LR
   subgraph After["3 · After the call"]
     W --> S[Stripe Checkout, test mode<br/>+ SMS pay link]
     W --> M3{{Muse Spark<br/>case-note summary}} --> KV2[(KV: memory per buyer)]
-    W --> M4{{Muse Spark<br/>compliance audit: submit_audit}} --> ST[(KV: dealer's daily board)]
+    W --> R[Twilio call recording] --> VT{{Muse Voice Transcribe<br/>diarized transcript}} --> M4{{Muse Wonder<br/>compliance audit: submit_audit}} --> ST[(KV: dealer's daily board)]
+    R -. deleted after transcription .-> X[ ]
   end
   KV1 --> W
   KV2 --> P
   KV2 --> W
 ```
 
-### Where Muse Spark is used (5 different jobs)
+### Three Meta models, five jobs
 
-| Job | Call | Settings |
+| Job | Call | Model / settings |
 |---|---|---|
 | **Daily planner**: who, when and what offer | `planner.ts` → `schedule_call`, `skip_buyer` (parallel tool calls) | `reasoning.effort: low` |
 | **Voice agent**: the live conversation | `index.ts` → streaming Responses API + 6 outcome tools | `reasoning.effort: minimal` (~1 s to first word) |
 | **Closing check**: "is this call actually over?" | second pass with `continue_conversation` as an extra tool | `minimal` |
 | **Case notes**: the memory for the next call | two-sentence summary of the transcript | `minimal` |
-| **Compliance auditor**: a verifiable agent | `audit.ts` → `submit_audit` with one verdict + evidence per rule | `low` |
+| **Independent transcript** of the recording | `recording.ts` → `POST /v1/asr/transcribe`, `DIARIZATION` mode, language + keyword biasing (Twilio's 8 kHz audio is resampled to 16 kHz in the Worker) | **Muse Voice Transcribe 1.0** |
+| **Compliance auditor**: a verifiable agent that isn't the model that spoke | `audit.ts` → `submit_audit` with one verdict + evidence per rule | **Muse Wonder 1.0**, `low` |
 
 ### Safety is in the code, not just the prompt
 
@@ -104,7 +106,8 @@ The hackathon rules ask to show only what was built during the event. Commit `7f
 | `e1250b8` | **Agentic call planning**: Muse Spark plans the day; compliance enforced in code |
 | `56f6f3a` | Dialer refuses do-not-call buyers; promises validated against the plan's window; README + MIT license |
 | `1781aa1` | **Compliance audit** of every call (verifiable agent) + the dealer's live daily board |
-| _latest_ | Counter-offer before handing off (found in a real phone test: "Saturday" went to a human instead of being negotiated) |
+| `b337271` | Counter-offer before handing off (found in a real phone test: "Saturday" went to a human instead of being negotiated) |
+| _latest_ | **Muse Voice Transcribe** re-transcribes the recording with speaker labels; **Muse Wonder** audits it; recording deleted after |
 
 See it all: `git diff 7fa0cc7..main`.
 
@@ -127,7 +130,8 @@ You also need a KV namespace (`MEMORY`) and the `CallLog` Durable Object, both d
 |---|---|
 | `src/index.ts` | WebSocket session with Twilio, streaming Muse Spark, outcome tools, closing check, memory |
 | `src/planner.ts` | Agentic daily planner and its compliance guardrails |
-| `src/audit.ts` | Post-call compliance audit + daily board counters |
+| `src/audit.ts` | Post-call compliance audit (Muse Wonder) + daily board counters |
+| `src/recording.ts` | Recording → 16 kHz WAV → Muse Voice Transcribe (diarized) → audit → delete recording |
 | `src/demo.ts` | Demo API: outbound calls, rate limits, live transcript, Stripe pay link + SMS |
 | `src/demo-page.ts` | The public demo page (single HTML file) |
 | `src/demo-data.ts` | Fictitious dealer and buyers |

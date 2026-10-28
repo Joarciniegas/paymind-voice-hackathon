@@ -9,6 +9,7 @@ import { DEUDORES_DEMO, DEALER_DEMO } from './demo-data';
 import { PAGINA } from './demo-page';
 import { planificar } from './planner';
 import { leerDia, type Acta } from './audit';
+import { grabacionLista } from './recording';
 
 export interface DemoEnv {
   MEMORY: KVNamespace;
@@ -27,7 +28,8 @@ export type Evento =
   | { kind: 'status'; status: string; ts: string }
   | { kind: 'end'; outcome: string; promisedDate?: string; promisedAmount?: number; ts: string }
   | { kind: 'sms'; url: string; amount: number; ts: string }
-  | ({ kind: 'audit'; ts: string } & Acta);
+  | ({ kind: 'audit'; ts: string } & Acta)
+  | { kind: 'voice'; model: string; turns: { who: 'agent' | 'buyer'; text: string; startMs: number }[]; ts: string };
 
 const POR_TELEFONO = 3;
 const PLANES_POR_DIA = 200; // cada plan son 1-2 peticiones a Muse
@@ -58,7 +60,7 @@ async function contar(env: DemoEnv, clave: string, tope: number): Promise<boolea
 }
 
 /** Rutas de la demo. null = no es de la demo (sigue el Worker normal). */
-export async function rutaDemo(req: Request, env: DemoEnv, url: URL): Promise<Response | null> {
+export async function rutaDemo(req: Request, env: DemoEnv, url: URL, ctx: ExecutionContext): Promise<Response | null> {
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/demo')) {
     return new Response(PAGINA, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
   }
@@ -81,6 +83,14 @@ export async function rutaDemo(req: Request, env: DemoEnv, url: URL): Promise<Re
     const c = url.searchParams.get('c') || '';
     if (!/^demo-[a-z]+-[0-9a-f]{16}$/.test(c)) return json({ error: 'bad call id' }, 400);
     return env.CALLS.get(env.CALLS.idFromName(c)).fetch('https://log/read');
+  }
+  // Twilio: la grabación de una llamada de la demo está lista (URL firmada por nosotros).
+  if (req.method === 'POST' && url.pathname === '/twilio/recording') {
+    const c = url.searchParams.get('c') || '';
+    if (!/^demo-[a-z]+-[0-9a-f]{16}$/.test(c) || url.searchParams.get('t') !== (await firmar(env.VOICE_KEY, `rec:${c}`))) return new Response('forbidden', { status: 403 });
+    const form = await req.formData();
+    if (form.get('RecordingStatus') === 'completed') ctx.waitUntil(grabacionLista(env, c, form));
+    return new Response('ok');
   }
   if (req.method === 'GET' && url.pathname === '/api/stats') {
     return json({ date: hoy(), stats: await leerDia(env.MEMORY, hoy()) });
@@ -114,8 +124,8 @@ async function llamar(req: Request, env: DemoEnv, url: URL): Promise<Response> {
   const ws = `wss://${url.host}/ws?c=${callId}&t=${await firmar(env.VOICE_KEY, callId)}`;
   const es = d.lang === 'es';
   const saludo = es
-    ? `Hola, le habla el asistente virtual de ${DEALER_DEMO.dealerName}. ¿Hablo con ${d.firstName}?`
-    : `Hi, this is the virtual assistant from ${DEALER_DEMO.dealerName}. Am I speaking with ${d.firstName}?`;
+    ? `Hola, le habla el asistente virtual de ${DEALER_DEMO.dealerName}; esta llamada se graba. ¿Hablo con ${d.firstName}?`
+    : `Hi, this is the virtual assistant from ${DEALER_DEMO.dealerName}; this call is recorded. Am I speaking with ${d.firstName}?`;
   const twiml =
     `<Response><Connect><ConversationRelay url="${xml(ws)}" language="${es ? 'es-US' : 'en-US'}" ` +
     `welcomeGreeting="${xml(saludo)}" interruptible="speech" dtmfDetection="false"/></Connect></Response>`;
@@ -123,7 +133,13 @@ async function llamar(req: Request, env: DemoEnv, url: URL): Promise<Response> {
   const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json`, {
     method: 'POST',
     headers: { authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`, 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ To: to, From: env.TWILIO_FROM, Twiml: twiml, Timeout: '25' }),
+    body: new URLSearchParams({
+      To: to, From: env.TWILIO_FROM, Twiml: twiml, Timeout: '25',
+      // Grabación solo para la transcripción independiente y la auditoría; se borra al transcribirla.
+      Record: 'true',
+      RecordingStatusCallback: `https://${url.host}/twilio/recording?c=${callId}&t=${await firmar(env.VOICE_KEY, `rec:${callId}`)}`,
+      RecordingStatusCallbackEvent: 'completed',
+    }),
   });
   if (!r.ok) {
     console.log('[demo] twilio error', r.status, (await r.text()).slice(0, 300));
