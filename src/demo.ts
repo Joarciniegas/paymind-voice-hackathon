@@ -96,6 +96,9 @@ async function llamar(req: Request, env: DemoEnv, url: URL): Promise<Response> {
   const d = DEUDORES_DEMO.find((x) => x.id === b.buyer);
   if (!d) return json({ error: 'Pick a buyer.' }, 400);
   if (!b.consent) return json({ error: 'Please confirm you agree to receive the automated demo call.' }, 400);
+  // Cumplimiento: quien pidió no ser llamado no vuelve a recibir llamadas (hasta «Reset» en la demo).
+  const memoria = ((await env.MEMORY.get<{ outcome: string }[]>(`memory:${d.id}`, 'json')) ?? []) as { outcome: string }[];
+  if (memoria.some((m) => m.outcome === 'do_not_call')) return json({ error: `${d.firstName} asked not to be called again, so the agent won't dial. Press Reset in Memory to try again.` }, 409);
   const to = telefonoUS(b.phone || '');
   if (!to) return json({ error: 'Enter a valid US phone number (10 digits).' }, 400);
   if (!(await contar(env, `rate:global:${hoy()}`, Number(env.DEMO_DAILY_CAP || 60)))) return json({ error: 'The demo hit its daily call limit. Please try again tomorrow.' }, 429);

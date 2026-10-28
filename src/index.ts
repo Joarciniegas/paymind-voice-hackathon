@@ -482,9 +482,14 @@ function despedida(r: Resultado, lang: 'es' | 'en'): string {
 }
 
 /** Promesa dentro de las reglas del dealer; si no, pasa a un humano. */
+/** Días de plazo de esta llamada: el planificador puede dar menos que el máximo del dealer, nunca más. */
+function plazoMaximo(c: Contexto): number {
+  return c.plan?.action === 'call' && c.plan.offer ? Math.min(c.plan.offer.extensionDays, c.rules.maxExtensionDays) : c.rules.maxExtensionDays;
+}
+
 function validarPromesa(fecha: string, monto: number, c: Contexto): Fin {
   const dias = (Date.parse(`${fecha}T12:00:00Z`) - Date.parse(`${c.today}T12:00:00Z`)) / 86_400_000;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(fecha) && dias >= 0 && dias <= c.rules.maxExtensionDays && monto > 0) return { resultado: 'promise', promesa: { date: fecha, amount: monto } };
+  if (/^\d{4}-\d{2}-\d{2}$/.test(fecha) && dias >= 0 && dias <= plazoMaximo(c) && monto > 0) return { resultado: 'promise', promesa: { date: fecha, amount: monto } };
   return { resultado: 'human', promesa: null };
 }
 
@@ -532,8 +537,7 @@ function fraseNoEsEl(c: Contexto): string {
 
 function instrucciones(c: Contexto): string {
   const dinero = (n: number) => `$${n.toFixed(2)}`;
-  // El planificador puede dar menos plazo que el máximo del dealer, nunca más.
-  const plazo = c.plan?.action === 'call' && c.plan.offer ? Math.min(c.plan.offer.extensionDays, c.rules.maxExtensionDays) : c.rules.maxExtensionDays;
+  const plazo = plazoMaximo(c);
   const limite = new Date(Date.parse(`${c.today}T12:00:00Z`) + plazo * 86_400_000).toISOString().slice(0, 10);
   const situacion =
     c.pastDue > 0
