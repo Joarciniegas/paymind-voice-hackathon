@@ -82,7 +82,7 @@ flowchart LR
 The model proposes and the code decides. Even if Muse Spark gets something wrong:
 
 - **Identity first.** Until the person confirms they are the buyer, the only allowed reply is a fixed sentence that reveals nothing. If the model says it without calling `wrong_person`, the code still ends the call.
-- **Promises are validated.** The date has to fall within the window the plan allows (never more than the dealer's maximum extension), and the amount must be positive. Anything else goes to a person.
+- **Promises are validated.** The planner sets the opening offer; the hard limit is the dealer's maximum extension, and the amount must be positive. If the buyer asks for a later date, the agent first counter-offers the last allowed date or a partial payment, and only then hands off to a person.
 - **Calling hours, do-not-call and active promises** are enforced by the planner and by the dialer, whatever the model proposed.
 - **The call never hangs.** If the agent wraps up without choosing an outcome, a second Muse Spark pass decides. Every hang-up is preceded by a goodbye.
 - **Every call is audited.** Identity before disclosure, no threats, no invented terms, no card numbers by phone, respectful tone, language and outcome are judged by Muse Spark with evidence. Third-party disclosure and promise limits are checked in code. We tested the auditor on a deliberately bad call (debt told to the buyer's sister, repossession threat, invented discount): it failed it, 3/8.
@@ -103,7 +103,8 @@ The hackathon rules ask to show only what was built during the event. Commit `7f
 | `9236ba6` | **SMS pay link**: Stripe Checkout (test mode) for the promised amount |
 | `e1250b8` | **Agentic call planning**: Muse Spark plans the day; compliance enforced in code |
 | `56f6f3a` | Dialer refuses do-not-call buyers; promises validated against the plan's window; README + MIT license |
-| _latest_ | **Compliance audit** of every call (verifiable agent) + the dealer's live daily board |
+| `1781aa1` | **Compliance audit** of every call (verifiable agent) + the dealer's live daily board |
+| _latest_ | Counter-offer before handing off (found in a real phone test: "Saturday" went to a human instead of being negotiated) |
 
 See it all: `git diff 7fa0cc7..main`.
 

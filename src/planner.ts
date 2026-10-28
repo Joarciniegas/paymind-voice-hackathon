@@ -195,7 +195,7 @@ export function guionDelPlan(p: Paso | null, lang: 'es' | 'en'): string {
   const partes = [
     `Objetivo: ${p.goal}`,
     `Oferta inicial: ${p.offer.note || (p.offer.extensionDays ? `hasta ${p.offer.extensionDays} días de plazo` : 'pagar hoy')}`,
-    `Plazo máximo que puedes ofrecer en ESTA llamada: ${p.offer.extensionDays} días`,
+    `Empieza ofreciendo hasta ${p.offer.extensionDays} días; si el cliente necesita más, puedes llegar al máximo del dealer (lo marca el calendario)`,
     p.offer.splitPayment ? 'Puedes ofrecer dividir el saldo vencido en dos pagos dentro de ese plazo.' : 'No ofrezcas dividir el pago.',
   ];
   return `

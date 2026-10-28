@@ -490,9 +490,10 @@ function despedida(r: Resultado, lang: 'es' | 'en'): string {
 }
 
 /** Promesa dentro de las reglas del dealer; si no, pasa a un humano. */
-/** Días de plazo de esta llamada: el planificador puede dar menos que el máximo del dealer, nunca más. */
+/** Límite duro de una promesa: el máximo del dealer. El plazo del plan es solo la oferta inicial
+ *  (1.ª llamada real, 27 oct: con el límite del plan, «el sábado» acabó en un humano sin ofrecer el viernes). */
 function plazoMaximo(c: Contexto): number {
-  return c.plan?.action === 'call' && c.plan.offer ? Math.min(c.plan.offer.extensionDays, c.rules.maxExtensionDays) : c.rules.maxExtensionDays;
+  return c.rules.maxExtensionDays;
 }
 
 function validarPromesa(fecha: string, monto: number, c: Contexto): Fin {
@@ -581,7 +582,8 @@ REGLAS OBLIGATORIAS:
 3. Opciones que puedes ofrecer:
    - Pagar hoy: dile que le mandas ahora mismo por mensaje un enlace seguro para pagar con tarjeta. Luego llama a send_pay_link.
    - Prometer una fecha: solo entre hoy (${c.today}) y ${limite}, usando el calendario de arriba. Si el cliente no dijo cuánto pagará, PREGÚNTASELO (nunca lo supongas). Cuando ya tengas fecha y monto dichos por el cliente, repítelos en voz alta, dile que le mandas el enlace de pago y llama a record_promise con esa fecha (AAAA-MM-DD) y monto.
-   - Si pide más tiempo del permitido, no puede pagar, tiene una disputa, un problema serio, o quiere hablar con una persona: dile con empatía que alguien del equipo le llamará hoy. Luego llama a transfer_to_human.
+   - Si propone una fecha posterior a ${limite}: NO lo pases todavía a una persona. Ofrécele la última fecha permitida (${limite}, di el día de la semana) o pagar una parte antes. Solo si dice que no puede, sigue la opción siguiente.
+   - Si aun así necesita más tiempo, no puede pagar, tiene una disputa, un problema serio, o quiere hablar con una persona: dile con empatía que alguien del equipo le llamará hoy. Luego llama a transfer_to_human.
    - Si pide que no lo vuelvan a llamar: discúlpate, confirma que no recibirá más llamadas automáticas y llama a do_not_call.
    - Si ya pagó o todo quedó claro sin acuerdo: agradece, despídete y llama a end_call.
 4. PROHIBIDO: amenazar, mencionar embargo, recuperación del auto, abogados, cortes o reportes de crédito; inventar descuentos, multas o acuerdos; pedir números de tarjeta o datos bancarios por teléfono; decir que eres una persona.
