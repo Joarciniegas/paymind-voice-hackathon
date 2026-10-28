@@ -15,6 +15,7 @@
 import { LOGO_BMP_B64 } from './logo';
 import { DEALER_DEMO, DEUDORES_DEMO } from './demo-data';
 import { CallLog, enviarEnlacePago, registrar, rutaDemo, type DemoEnv, type Evento } from './demo';
+import { guionDelPlan, type Paso } from './planner';
 
 export { CallLog };
 
@@ -40,6 +41,7 @@ type Contexto = {
   today: string;
   rules: { freeExtensionDays: number; maxExtensionDays: number; allowSplitPayment: boolean; tone: string };
   memory?: Recuerdo[]; // llamadas anteriores, la más reciente al final
+  plan?: Paso | null; // lo que decidió el agente planificador para hoy
 };
 /** Lo que queda de una llamada para la siguiente (hackathon: memoria por deudor). */
 type Recuerdo = { date: string; outcome: Resultado; promisedDate?: string; promisedAmount?: number; summary: string };
@@ -63,8 +65,11 @@ async function contextoDemo(callId: string, env: Env): Promise<Contexto | null> 
   const d = deudorDemo(callId);
   if (!d) return null;
   const today = new Date(Date.now() - 5 * 3_600_000).toISOString().slice(0, 10); // Houston (CDT/CST ≈ UTC-5)
-  const memory = (await env.MEMORY.get<Recuerdo[]>(claveMemoria(d.id), 'json').catch(() => null)) ?? [];
-  return { ...d, ...DEALER_DEMO, today, memory };
+  const [memory, plan] = await Promise.all([
+    env.MEMORY.get<Recuerdo[]>(claveMemoria(d.id), 'json').catch(() => null),
+    env.MEMORY.get<Paso>(`plan:${d.id}`, 'json').catch(() => null),
+  ]);
+  return { ...d, ...DEALER_DEMO, today, memory: memory ?? [], plan };
 }
 
 /** Muse Spark resume la llamada en 1-2 frases para la próxima vez (sin streaming, fuera de la llamada). */
@@ -313,7 +318,7 @@ class Sesion {
     }
   }
 
-  /** Segunda opinión de Muse con tool_choice «required»: ¿terminó la llamada y cómo? */
+  /** Segunda opinión de Muse: ¿terminó la llamada y cómo? (la Meta Model API solo admite tool_choice «auto»). */
   private async verificarCierre(c: Contexto): Promise<Fin | null> {
     try {
       const r = await fetch(MODEL_API, {
@@ -324,14 +329,15 @@ class Sesion {
           reasoning: { effort: ESFUERZO },
           max_output_tokens: 700,
           tools: [...HERRAMIENTAS, CONTINUAR],
-          tool_choice: 'required',
+          tool_choice: 'auto',
           instructions:
             this.mensajes.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n') +
-            '\n\nREVISIÓN: el agente acaba de hablar. Si la llamada ya llegó a su fin según las reglas (p. ej. fecha y monto confirmados), llama a la función de ese desenlace con sus datos; si falta algo por acordar o preguntar, llama a continue_conversation.',
+            '\n\nREVISIÓN: el agente acaba de hablar. Si la llamada ya llegó a su fin según las reglas (p. ej. fecha y monto confirmados), llama a la función de ese desenlace con sus datos; si falta algo por acordar o preguntar, llama a continue_conversation. Responde SOLO con una llamada a función, sin texto.',
           input: this.mensajes.filter((m) => m.role !== 'system').map((m) => ({ role: m.role, content: m.content })),
         }),
       });
-      const j = (await r.json()) as { output?: { type: string; name?: string; arguments?: string }[] };
+      const j = (await r.json()) as { output?: { type: string; name?: string; arguments?: string }[]; error?: unknown };
+      if (!r.ok) console.log('[cierre] muse error', r.status, JSON.stringify(j.error ?? '').slice(0, 300));
       const llamadas: Funcion[] = (j.output ?? [])
         .filter((o) => o.type === 'function_call' && o.name && o.name !== 'continue_conversation')
         .map((o) => {
@@ -526,7 +532,9 @@ function fraseNoEsEl(c: Contexto): string {
 
 function instrucciones(c: Contexto): string {
   const dinero = (n: number) => `$${n.toFixed(2)}`;
-  const limite = new Date(Date.parse(`${c.today}T12:00:00Z`) + c.rules.maxExtensionDays * 86_400_000).toISOString().slice(0, 10);
+  // El planificador puede dar menos plazo que el máximo del dealer, nunca más.
+  const plazo = c.plan?.action === 'call' && c.plan.offer ? Math.min(c.plan.offer.extensionDays, c.rules.maxExtensionDays) : c.rules.maxExtensionDays;
+  const limite = new Date(Date.parse(`${c.today}T12:00:00Z`) + plazo * 86_400_000).toISOString().slice(0, 10);
   const situacion =
     c.pastDue > 0
       ? `Tiene un saldo vencido de ${dinero(c.pastDue)} (${c.daysPastDue} días de atraso). Su pago normal es de ${dinero(c.paymentAmount)}.`
@@ -543,7 +551,7 @@ Cómo usarlas: una vez confirmada la identidad, menciónalo con naturalidad en t
   const idioma = c.lang === 'es' ? 'Habla SIEMPRE en español neutro (de EE. UU.), de usted.' : 'Always speak English.';
   // Calendario de los próximos días: el modelo se equivoca al calcular «el viernes».
   const dias = c.lang === 'es' ? ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'] : ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const calendario = Array.from({ length: c.rules.maxExtensionDays + 1 }, (_, i) => {
+  const calendario = Array.from({ length: plazo + 1 }, (_, i) => {
     const f = new Date(Date.parse(`${c.today}T12:00:00Z`) + i * 86_400_000);
     return `${dias[f.getUTCDay()]} ${f.toISOString().slice(0, 10)}${i === 0 ? ' (hoy)' : i === 1 ? ' (mañana)' : ''}`;
   }).join('; ');
@@ -554,7 +562,7 @@ DATOS (solo para el cliente, nunca para terceros):
 - Nombre: ${c.firstName}
 - ${situacion}
 - Teléfono del concesionario: ${c.dealerPhone || 'el de siempre'}
-${memoria}
+${memoria}${guionDelPlan(c.plan ?? null, c.lang)}
 REGLAS OBLIGATORIAS:
 1. Ya preguntaste "¿Hablo con ${c.firstName}?". Si la persona NO lo confirma claramente (dice que no, que no está, que es otra persona, o no sabe), NO digas por qué llamas: nada de pagos, montos, cuentas, deudas ni del vehículo, aunque te pregunte. Responde EXACTAMENTE: "${noEsEl}" y llama a wrong_person.
 2. Si confirma que es ${c.firstName}: explica brevemente el motivo de la llamada con los DATOS y pregunta cuándo puede pagar.

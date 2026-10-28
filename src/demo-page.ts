@@ -140,6 +140,34 @@ export const PAGINA = /* html */ `<!doctype html>
   .reset { background: none; border: 1px solid var(--line-2); color: var(--muted); font: 500 11px/1 var(--mono); padding: 7px 10px; border-radius: 8px; cursor: pointer; letter-spacing: .04em; }
   .reset:hover { color: var(--text); border-color: var(--text); }
 
+  /* planificador: agenda del día que decide Muse */
+  .planner { margin-top: 56px; }
+  .planner-h { display: flex; justify-content: space-between; align-items: end; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+  .planner-h h3 { font: 800 clamp(26px, 3.5vw, 38px)/1.05 var(--display); letter-spacing: -.025em; margin: 10px 0 6px; }
+  .planner-h p { margin: 0; color: var(--muted); max-width: 620px; }
+  .plan-btn { display: inline-flex; align-items: center; gap: 10px; padding: 13px 18px; border-radius: 12px; border: 1px solid rgba(0,129,251,.5); background: linear-gradient(100deg, rgba(0,129,251,.22), rgba(122,184,255,.08)); color: var(--text); font: 700 15px/1 var(--display); cursor: pointer; transition: border-color .2s, transform .15s; }
+  .plan-btn:hover { border-color: #7ab8ff; transform: translateY(-1px); }
+  .plan-btn:disabled { opacity: .6; cursor: default; transform: none; }
+  .plan-btn .inf { width: 26px; height: 13px; }
+  body.planning .plan-btn .inf path { animation: draw 1.2s linear infinite; }
+  .agenda { display: grid; gap: 10px; }
+  .slot { display: grid; grid-template-columns: 112px 1fr; gap: 18px; padding: 16px 18px; border-radius: 16px; border: 1px solid var(--line); background: var(--panel); animation: rise .4s ease-out both; }
+  @media (max-width: 620px) { .slot { grid-template-columns: 1fr; gap: 10px; } }
+  .slot.skip { opacity: .72; border-style: dashed; }
+  .when b { display: block; font: 800 24px/1 var(--display); letter-spacing: -.02em; }
+  .when small { font: 500 11px/1.6 var(--mono); color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+  .slot.skip .when b { color: var(--dim); font-size: 18px; }
+  .slot h4 { margin: 0 0 4px; font: 700 17px/1.3 var(--display); }
+  .slot h4 span { font: 500 12px/1 var(--mono); color: var(--muted); margin-left: 6px; }
+  .slot .goal { margin: 0; }
+  .offer { display: inline-block; margin-top: 8px; padding: 8px 11px; border-radius: 10px; background: rgba(255,173,66,.09); border: 1px solid rgba(255,173,66,.3); font-size: 14px; }
+  .offer b { font: 500 11px/1 var(--mono); color: var(--amber); letter-spacing: .08em; text-transform: uppercase; margin-right: 6px; }
+  .why { margin: 8px 0 0; font-size: 14px; color: var(--muted); }
+  .guard { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+  .guard li { font: 500 12px/1.5 var(--mono); color: var(--teal); }
+  .guard li::before { content: "⛨ "; }
+  .plan-meta { margin-top: 10px; font: 400 12px/1.4 var(--mono); color: var(--dim); }
+
   /* cómo funciona */
   .how { margin-top: 56px; }
   .how h3 { font: 800 clamp(26px, 3.5vw, 38px)/1.05 var(--display); letter-spacing: -.025em; margin: 0 0 22px; }
@@ -201,6 +229,7 @@ export const PAGINA = /* html */ `<!doctype html>
         <span class="chip"><b>●</b> Muse Spark 1.3</span>
         <span class="chip">Tool calling</span>
         <span class="chip">Per-buyer memory</span>
+        <span class="chip">Agentic call planning</span>
         <span class="chip">EN / ES</span>
         <span class="chip">Twilio ConversationRelay</span>
       </div>
@@ -235,6 +264,15 @@ export const PAGINA = /* html */ `<!doctype html>
       <div class="panel-h"><h2>Memory · <span id="memName">buyer</span></h2><button class="reset" id="reset">Reset</button></div>
       <div class="mem" id="mem"></div>
     </div>
+  </section>
+
+  <section class="planner">
+    <div class="planner-h">
+      <div><div class="eyebrow">Agentic planning</div><h3>Who to call today, and with what offer</h3><p>Muse Spark reads every account, the dealer's rules and each buyer's memory, then plans the day with tool calls. Compliance rules (calling hours, do-not-call, active promises) are enforced in code on top of its plan.</p></div>
+      <button class="plan-btn" id="planBtn"><svg class="inf" viewBox="0 0 48 24" aria-hidden="true"><path d="M12 4c-4.4 0-8 3.6-8 8s3.6 8 8 8c5 0 7-5 12-8s7-8 12-8c4.4 0 8 3.6 8 8s-3.6 8-8 8c-5 0-7-5-12-8S17 4 12 4z" fill="none" stroke="#7ab8ff" stroke-width="3.4" stroke-linecap="round"/></svg><span id="planLabel">Plan today's calls</span></button>
+    </div>
+    <div class="agenda" id="agenda"><p class="empty">No plan yet. Press <b>Plan today's calls</b> and watch Muse Spark decide.</p></div>
+    <div class="plan-meta" id="planMeta"></div>
   </section>
 
   <section class="how">
@@ -272,6 +310,36 @@ function setState(name, label) {
   $('status').textContent = label;
 }
 
+function when(t, now) {
+  if (!t) return '<b>—</b><small>not today</small>';
+  const [d, hm] = t.split('T');
+  let [h, m] = hm.split(':').map(Number);
+  const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+  return '<b>' + h + ':' + String(m).padStart(2, '0') + '</b><small>' + ap + ' · ' + (d === now.slice(0, 10) ? 'today' : 'tomorrow') + '</small>';
+}
+function renderPlan(p) {
+  if (!p) return;
+  $('agenda').innerHTML = p.steps.map((s) => {
+    const b = buyers.find((x) => x.id === s.buyerId) || { firstName: s.buyerId, vehicle: '' };
+    const offer = s.offer ? '<div class="offer"><b>Opening offer</b>' + esc(s.offer.note || (s.offer.extensionDays + ' days max')) + ' · up to ' + s.offer.extensionDays + ' days' + (s.offer.splitPayment ? ' · split payment' : '') + '</div>' : '';
+    const guard = s.guardrails.length ? '<ul class="guard">' + s.guardrails.map((g) => '<li>' + esc(g) + '</li>').join('') + '</ul>' : '';
+    return '<div class="slot ' + s.action + '"><div class="when">' + (s.action === 'call' ? when(s.callAt, p.now) : '<b>Skip</b><small>no call today</small>') + '</div><div><h4>' + esc(b.firstName) + '<span>' + esc(b.vehicle) + '</span></h4><p class="goal">' + esc(s.goal) + '</p>' + offer + '<p class="why">' + esc(s.reason) + '</p>' + guard + '</div></div>';
+  }).join('');
+  $('planMeta').textContent = 'Planned by ' + p.model + ' at ' + p.now + ' (Houston). The next call to each buyer uses this plan as its script.';
+}
+$('planBtn').addEventListener('click', async () => {
+  $('planBtn').disabled = true; document.body.classList.add('planning'); $('planLabel').textContent = 'Muse Spark is planning…';
+  try {
+    const r = await fetch('/api/plan', { method: 'POST' });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Something went wrong.');
+    renderPlan(j.plan);
+  } catch (e) {
+    $('planMeta').textContent = e.message;
+  }
+  $('planBtn').disabled = false; document.body.classList.remove('planning'); $('planLabel').textContent = 'Plan again';
+});
+
 async function init() {
   const r = await fetch('/api/buyers').then((x) => x.json());
   buyers = r.buyers;
@@ -280,6 +348,7 @@ async function init() {
     (b.pastDue > 0 ? money(b.pastDue) + ' past due · ' + b.daysPastDue + ' days late' : 'Up to date · next ' + money(b.paymentAmount)) + '</small></span><span class="lang">' + b.lang.toUpperCase() + '</span></button>').join('');
   document.querySelectorAll('.buyer').forEach((el) => el.addEventListener('click', () => pick(el.dataset.id)));
   pick(buyers[0].id);
+  fetch('/api/plan').then((x) => x.json()).then((j) => { if (j.plan) { renderPlan(j.plan); $('planLabel').textContent = 'Plan again'; } }).catch(() => {});
 }
 
 function pick(id) {

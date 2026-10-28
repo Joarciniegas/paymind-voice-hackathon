@@ -7,6 +7,7 @@
 
 import { DEUDORES_DEMO, DEALER_DEMO } from './demo-data';
 import { PAGINA } from './demo-page';
+import { planificar } from './planner';
 
 export interface DemoEnv {
   MEMORY: KVNamespace;
@@ -15,6 +16,7 @@ export interface DemoEnv {
   TWILIO_ACCOUNT_SID: string;
   TWILIO_AUTH_TOKEN: string;
   TWILIO_FROM: string;
+  MODEL_API_KEY: string;
   STRIPE_TEST_KEY: string; // sandbox: los enlaces de la demo nunca cobran dinero real
   DEMO_DAILY_CAP?: string;
 }
@@ -26,6 +28,7 @@ export type Evento =
   | { kind: 'sms'; url: string; amount: number; ts: string };
 
 const POR_TELEFONO = 3;
+const PLANES_POR_DIA = 200; // cada plan son 1-2 peticiones a Muse
 const json = (d: unknown, status = 200) => new Response(JSON.stringify(d), { status, headers: { 'content-type': 'application/json' } });
 const hoy = () => new Date(Date.now() - 5 * 3_600_000).toISOString().slice(0, 10);
 const xml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -69,13 +72,20 @@ export async function rutaDemo(req: Request, env: DemoEnv, url: URL): Promise<Re
     const { buyer } = (await req.json().catch(() => ({}))) as { buyer?: string };
     const d = DEUDORES_DEMO.find((x) => x.id === buyer);
     if (!d) return json({ error: 'unknown buyer' }, 404);
-    await env.MEMORY.delete(`memory:${d.id}`);
+    await Promise.all([env.MEMORY.delete(`memory:${d.id}`), env.MEMORY.delete(`plan:${d.id}`)]);
     return json({ ok: true });
   }
   if (req.method === 'GET' && url.pathname === '/api/transcript') {
     const c = url.searchParams.get('c') || '';
     if (!/^demo-[a-z]+-[0-9a-f]{16}$/.test(c)) return json({ error: 'bad call id' }, 400);
     return env.CALLS.get(env.CALLS.idFromName(c)).fetch('https://log/read');
+  }
+  if (req.method === 'GET' && url.pathname === '/api/plan') {
+    return json({ plan: await env.MEMORY.get('plan:last', 'json') });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/plan') {
+    if (!(await contar(env, `rate:plan:${hoy()}`, PLANES_POR_DIA))) return json({ error: 'The planner hit its daily limit. Please try again tomorrow.' }, 429);
+    return json({ plan: await planificar(env.MODEL_API_KEY, env.MEMORY) });
   }
   if (req.method === 'POST' && url.pathname === '/api/call') return llamar(req, env, url);
   return null;
