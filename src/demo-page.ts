@@ -317,7 +317,7 @@ export const PAGINA = /* html */ `<!doctype html>
       <div class="step"><b>Twilio dials</b><p>ConversationRelay streams the buyer's words, already transcribed, to a Cloudflare Worker over WebSocket.</p></div>
       <div class="step"><b>Muse Spark talks</b><p>Responses API, streaming, <code>minimal</code> reasoning, so the first sentence is spoken in about a second.</p></div>
       <div class="step"><b>Tools decide</b><p><code>record_promise</code>, <code>send_pay_link</code>, <code>transfer_to_human</code>… The dealer's rules are enforced in code.</p></div>
-      <div class="step"><b>It remembers, and gets audited</b><p>After hanging up, Muse Spark writes a case note for the next call, and a second Muse Spark pass audits the transcript against the collection rules.</p></div>
+      <div class="step"><b>It remembers, and gets audited</b><p>After hanging up, Muse Spark writes a case note for the next call, Muse Voice Transcribe re-transcribes the recording, and Muse Wonder audits it against the collection rules.</p></div>
     </div>
     <div class="tries">
       <div class="try"><b>Promise, then call back.</b> Agree to pay on Friday. Call again: the agent brings up your promise.</div>
