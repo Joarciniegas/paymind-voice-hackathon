@@ -309,7 +309,9 @@ class Sesion {
       this.promesa = fin.promesa;
       // Nunca se cuelga sin despedirse.
       if (!SE_DESPIDIO.test(dicho)) {
-        const adios = despedida(fin.resultado, c.lang);
+        // Si en la llamada ya avisó del enlace o del equipo, solo se despide (antes repetía «Le mando el enlace…»).
+        const yaAviso = this.mensajes.some((m) => m.role === 'assistant' && /enlace|link|alguien del equipo|someone from/i.test(m.content));
+        const adios = despedida(yaAviso ? 'done' : fin.resultado, c.lang);
         this.enviar({ type: 'text', token: adios, last: true });
         dicho += ` ${adios}`;
         this.anotar({ role: 'assistant', content: adios, ts: new Date().toISOString() });
